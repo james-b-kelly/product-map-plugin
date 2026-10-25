@@ -1,0 +1,30 @@
+{
+  "name": "product-map-inbox",
+  "version": "0.1.0",
+  "description": "Answers the requests you mark in Product Map for your own agent: signs in, installs the agent-inbox skill and runs Claude Code in the folder you link to each project.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "product-map-inbox": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "skill/SKILL.md",
+    "plist/com.productmap.agent-inbox.plist.template"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/james-b-kelly/-product-map.git",
+    "directory": "packages/product-map-inbox"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec \"test/*.test.ts\"",
+    "check": "npm run typecheck && npm run build && npm test",
+    "prepack": "npm run build"
+  }
+}

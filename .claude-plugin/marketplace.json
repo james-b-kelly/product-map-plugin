@@ -1,0 +1,15 @@
+{
+  "name": "product-map",
+  "owner": {
+    "name": "James Kelly"
+  },
+  "description": "Product Map, for the people who work in it.",
+  "plugins": [
+    {
+      "name": "product-map",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Product Map in Claude Code: the connection to Product Map, the skills to capture, draft, plan and build its work, and the agent inbox that answers requests in the background."
+    }
+  ]
+}

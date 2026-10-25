@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "product-map": {
+      "type": "http",
+      "url": "https://hlgeoebmigivjtbwaaup.supabase.co/functions/v1/mcp"
+    }
+  }
+}
