@@ -1,0 +1,35 @@
+{
+  "description": "Product Map: records the work unit a session claims, holds back a new branch, worktree or pull request in a linked repository until one is claimed, and gives a session in a linked repository the way of working.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "session-start"], "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__(plugin_product-map_product-map|product-map)__(pick_up_unit|release_unit|set_unit_state|list_projects|list_repos|set_contribution)$",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "record"], "timeout": 10 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "pre-bash"], "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "pre-worktree"], "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
