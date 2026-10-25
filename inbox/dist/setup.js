@@ -10,21 +10,29 @@
 //
 // Setup never clones and never picks a folder without an explicit choice, and keeps a folder the person linked
 // unless `--replace` says otherwise. Safe to run again: what is right is kept, what drifted (a copy no longer
-// following its repo's branch, a job running an old copy of the inbox) is fixed, and each step says what it did.
-import { realpathSync } from "node:fs";
+// following its repo's branch, a job running an old copy of the inbox) is fixed, and each step says what it did; a
+// run that changed nothing says so.
+//
+// Run from the Product Map plugin (PDM-55 WU-09), the plugin passes `--plugin-version`. Then setup also looks for what
+// a setup made before the plugin left beside it (legacy.ts) and retires or keeps each item as the person answered
+// (`--retire <id>`, `--keep <id>`), leaves the agent-inbox skill to the plugin, and at the end tells Product Map the
+// plugin's version over the inbox's own connection (`report_setup`).
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { sep } from "node:path";
 import { freshAuth, loadAuth, login, SignInNeeded } from "./auth.js";
 import { ensureCopy, failureMessage, ownerRepo } from "./copies.js";
 import { cannotLink, expandFolder, isDirectory, linkFor, linkPlain, linkTracked, loadFolders, notAllowed, projectArg, restoreLink, unlinkLink, unsafeFolder, } from "./folders.js";
 import { checkTrack, GIT_TIMEOUT_MS, inFolder, parseTrack, realGit } from "./git.js";
-import { checkJob, install, jobPathProblem } from "./job.js";
+import { checkJob, install, jobPathProblem, realLaunchctl } from "./job.js";
+import { backupJobPlist, CLAUDE_NEEDED, findLegacy, jobProgram, keptMessage, LEGACY_ID, realClaudeRun, retiredDay, retireItem, } from "./legacy.js";
 import { takeLock } from "./lock.js";
-import { contributionOf, listProjects, listRepos, McpClient, PROJECT_PATTERN, REPO_NAME, REPO_NAME_MAX, ReposRefused, setContribution, } from "./mcp.js";
-import { DEFAULT_SERVER, serverFrom } from "./paths.js";
+import { contributionOf, listProjects, listRepos, McpClient, PLUGIN_VERSION, PROJECT_PATTERN, REPO_NAME, REPO_NAME_MAX, ReposRefused, reportSetup, setContribution, } from "./mcp.js";
+import { DEFAULT_SERVER, LABEL, serverFrom } from "./paths.js";
 import { findClaude } from "./run.js";
 import { installSkill } from "./skill.js";
 const PER_PROJECT = new Set(["--role", "--copy", "--clone", "--repo", "--replace", "--allow-unverified-folder"]);
 export const SETUP_USAGE = `setup [--server <url> [--yes-other-server]] [--plan | --yes] [--json] [--no-inbox] [--look <folder>]...
+      [--plugin-version <version> [--retire <id>]... [--keep <id>]...]
       [--project <org>/<project> [--role shape|build] [--copy <folder> [--allow-unverified-folder] | --clone] [--repo <name>] [--replace]]...
   Flags after a --project apply to that project only.`;
 /**
@@ -33,7 +41,7 @@ export const SETUP_USAGE = `setup [--server <url> [--yes-other-server]] [--plan 
  * sets up two projects. Throws a plain Error for anything it cannot read.
  */
 export function parseSetupArgs(argv) {
-    const a = { yesOtherServer: false, plan: false, json: false, yes: false, noInbox: false, look: [], projects: [] };
+    const a = { yesOtherServer: false, plan: false, json: false, yes: false, noInbox: false, look: [], projects: [], retire: [], keep: [] };
     let current = null;
     for (let i = 0; i < argv.length; i++) {
         const raw = argv[i];
@@ -84,6 +92,26 @@ export function parseSetupArgs(argv) {
             case "--look":
                 a.look.push(value());
                 break;
+            case "--plugin-version": {
+                if (a.pluginVersion !== undefined)
+                    throw new Error("--plugin-version is given twice.");
+                const v = value();
+                if (v.length > 64 || !PLUGIN_VERSION.test(v))
+                    throw new Error("--plugin-version is a version such as 0.2.0.");
+                a.pluginVersion = v;
+                break;
+            }
+            case "--retire":
+            case "--keep": {
+                const id = value();
+                // An id reaches a shell command in single quotes, so it is held to the ids setup gives and nothing else.
+                if (!LEGACY_ID.test(id))
+                    throw new Error(`${name} takes an id from setup --plan's legacy list, such as skill:user:work-unit. ${JSON.stringify(id.slice(0, 80))} is not one.`);
+                if (a.retire.includes(id) || a.keep.includes(id))
+                    throw new Error(`${id} is given twice: choose --retire or --keep for it, once.`);
+                (name === "--retire" ? a.retire : a.keep).push(id);
+                break;
+            }
             case "--project": {
                 const key = projectArg(value());
                 if (a.projects.some((x) => x.project.toLowerCase() === key.toLowerCase()))
@@ -135,6 +163,8 @@ export function parseSetupArgs(argv) {
         throw new Error("--yes-other-server goes with --server <url>.");
     if (a.json && !a.plan && !a.yes)
         throw new Error("--json goes with --plan or --yes: the questions need a terminal.");
+    if ((a.retire.length || a.keep.length) && !(a.yes && a.pluginVersion))
+        throw new Error("--retire and --keep go with --yes and --plugin-version: they answer setup run from the plugin.");
     for (const p of a.projects) {
         if (p.copy && p.clone)
             throw new Error(`${p.project}: choose --copy <folder> or --clone, not both.`);
@@ -305,6 +335,8 @@ async function readRepos(client, project) {
     }
 }
 const jobDepsOf = (ctx) => ctx.job;
+/** Legacy is looked for only when setup runs from the plugin: outside it, those skills and servers are the setup. */
+const legacyOf = (ctx, args) => (args.pluginVersion ? findLegacy(ctx.paths, ctx.cwd, { platform: ctx.job.platform }) : []);
 const isMac = (ctx) => (ctx.job.platform ?? process.platform) === "darwin";
 const claudeFor = (ctx) => findClaude(ctx.job.env.PATH, ctx.paths.home, ctx.job.claudeDirs);
 /** Which projects setup works on: the ones named, else every one reached. Names not reached are returned apart. */
@@ -329,6 +361,9 @@ export async function planSetup(ctx, args) {
     const report = {
         server, hosted: server === DEFAULT_SERVER, signed_in: signed.auth !== null, problem: signed.problem,
         projects: [], not_reached: [], job: checkJob(ctx.paths, jobDepsOf(ctx)), claude: claudeFor(ctx)?.real ?? null,
+        job_program: isMac(ctx) ? jobProgram(ctx.paths) : null,
+        plugin_version: args.pluginVersion ?? null,
+        legacy: legacyOf(ctx, args),
     };
     if (!signed.auth || signed.problem)
         return report;
@@ -404,6 +439,13 @@ function printPlan(ctx, r) {
     }
     ctx.print(r.job.supported ? `Job: ${r.job.current ? "installed and up to date" : JOB_WORDS[r.job.problem ?? "not_installed"]}.` : "Job: macOS only for now.");
     ctx.print(r.claude ? `Claude Code: ${r.claude}.` : "Claude Code: not found. The job needs it.");
+    if (r.plugin_version)
+        ctx.print(`Plugin: ${r.plugin_version}.`);
+    if (r.legacy.length) {
+        ctx.print("Set up before the plugin (answer each with --retire <id> or --keep <id>):");
+        for (const l of r.legacy)
+            ctx.print(`  ${l.id}: ${l.description} (${l.path})`);
+    }
 }
 const repoList = (repos) => repos.map((r) => r.name).join(", ");
 /** A folder named for a project's requests, checked: it may be linked, and its origin is the project's repo. */
@@ -659,7 +701,7 @@ async function carryOut(ctx, client, decisions, say) {
                 say({ project: null, step: "role", outcome: "skipped", message: setRoles.length
                         ? `Stopped. Roles already set: ${setRoles.join(", ")}. No folder, copy or job was changed.`
                         : "Stopped. No role, folder, copy or job was changed." });
-                return { inboxOn: false, ok: false };
+                return { inboxOn: false, ok: false, stopped: true };
             }
         }
         for (const d of decisions) {
@@ -795,12 +837,25 @@ async function carryOut(ctx, client, decisions, say) {
     }
     return { inboxOn, ok };
 }
-/** The skill and the job, when at least one project has the inbox on. */
-function installJob(ctx, say) {
-    const skill = installSkill(ctx.paths);
-    say({ project: null, step: "skill", outcome: skill === "unchanged" ? "unchanged" : "done", message: `Skill ${skill}: ${ctx.paths.skill}` });
+/**
+ * The skill and the job, when at least one project has the inbox on. From the plugin the skill is the plugin's own
+ * (none is copied into ~/.claude/skills), and a job the person chose to keep (`--keep job:repo`) is left as it is.
+ */
+function installJob(ctx, say, opts) {
+    const fromPlugin = Boolean(opts.pluginVersion);
+    if (fromPlugin) {
+        say({ project: null, step: "skill", outcome: "skipped", message: "The plugin carries the agent-inbox skill, so none is copied into your own skills." });
+    }
+    else {
+        const skill = installSkill(ctx.paths);
+        say({ project: null, step: "skill", outcome: skill === "unchanged" ? "unchanged" : "done", message: `Skill ${skill}: ${ctx.paths.skill}` });
+    }
     if (!isMac(ctx)) {
         say({ project: null, step: "job", outcome: "skipped", message: "The background job is macOS only for now. Run npx product-map-inbox poll from your own scheduler." });
+        return true;
+    }
+    if (opts.keepJob) {
+        say({ project: null, step: "job", outcome: "skipped", message: `Kept the job as it is, as you chose: it runs the inbox from ${jobProgram(ctx.paths) ?? "elsewhere"}, not the one this plugin carries.` });
         return true;
     }
     const c = checkJob(ctx.paths, ctx.job);
@@ -808,20 +863,122 @@ function installJob(ctx, say) {
         say({ project: null, step: "job", outcome: "failed", message: jobPathProblem(ctx.paths, ctx.job) ?? "The job's PATH cannot be written." });
         return false;
     }
-    if (c.current) {
+    if (c.current && !opts.retireJob) {
         say({ project: null, step: "job", outcome: "unchanged", message: `Job installed and up to date: ${ctx.paths.plist}.` });
         return true;
     }
+    // A job retired from a repo is replaced here, in the run that installs the new one: its plist is kept in the backup
+    // folder first, and put back when the new job cannot be installed, so a failure never leaves no job at all.
+    const oldProgram = opts.retireJob ? jobProgram(ctx.paths) : null;
+    let backup = null;
+    let oldPlist = null;
+    if (opts.retireJob) {
+        try {
+            oldPlist = readFileSync(ctx.paths.plist, "utf8");
+            backup = backupJobPlist(ctx.paths, new Date());
+        }
+        catch (err) {
+            say({ project: null, step: "legacy", outcome: "failed", message: `The old job could not be saved before it was replaced (${err instanceof Error ? err.message : "no copy"}), so it was left as it is.` });
+            return false;
+        }
+    }
     try {
         const done = install(ctx.paths, ctx.job);
+        if (opts.retireJob) {
+            say({ project: null, step: "legacy", outcome: "done", message: `retired the job that ran the inbox from ${oldProgram ? cleanText(oldProgram) : "elsewhere"}: its plist was saved to ${backup}, and the new job runs the inbox's own copy. Nothing in that folder was changed.` });
+        }
         const why = c.problem === "not_installed" ? "Job installed" : `Job updated (it was ${JOB_WORDS[c.problem ?? "old_job"]})`;
-        say({ project: null, step: "job", outcome: "done", message: `${why}: ${done.plist}, every 60 seconds, running Claude Code from ${done.claude}. Log: ${ctx.paths.log}` });
+        const copy = !done.copied?.replaced ? ""
+            : opts.pluginVersion ? ` The inbox's own copy at ${ctx.paths.appDir} was refreshed for plugin ${opts.pluginVersion}.`
+                : ` The inbox's own copy at ${ctx.paths.appDir} was refreshed${done.copied.from !== done.copied.to ? ` (${done.copied.from ?? "unknown"} to ${done.copied.to ?? "unknown"})` : ""}.`;
+        say({ project: null, step: "job", outcome: "done", message: `${why}: ${done.plist}, every 60 seconds, running Claude Code from ${done.claude}.${copy} Log: ${ctx.paths.log}` });
         return true;
     }
     catch (err) {
-        say({ project: null, step: "job", outcome: "failed", message: err instanceof Error ? err.message : "The job could not be installed." });
+        let back = "";
+        if (oldPlist !== null) {
+            try {
+                writeFileSync(ctx.paths.plist, oldPlist, { mode: 0o644 });
+                back = reloadOldJob(ctx)
+                    ? " The old job was put back as it was."
+                    : ` The old job's plist is back at ${ctx.paths.plist}, but launchd did not load it. Try: launchctl bootstrap gui/${uidOf(ctx)} '${ctx.paths.plist}'`;
+            }
+            catch {
+                back = ` The old job could not be put back: its plist is saved at ${backup}.`;
+            }
+        }
+        say({ project: null, step: "job", outcome: "failed", message: `${err instanceof Error ? err.message : "The job could not be installed."}${back}` });
         return false;
     }
+}
+const uidOf = (ctx) => ctx.job.uid ?? process.getuid?.() ?? 0;
+/**
+ * Loads the old job's plist again after a failed install, as `install` loads one: when launchd has the label already
+ * it is back; otherwise unload it, wait until launchd lets go, then up to three tries. Whether it is loaded.
+ */
+function reloadOldJob(ctx) {
+    const launchctl = ctx.job.launchctl ?? realLaunchctl;
+    const sleep = ctx.job.sleep ?? ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+    const domain = `gui/${uidOf(ctx)}`;
+    const label = `${domain}/${LABEL}`;
+    if (launchctl(["print", label]).ok)
+        return true;
+    launchctl(["bootout", domain, ctx.paths.plist]);
+    for (let i = 0; i < 25 && launchctl(["print", label]).ok; i++)
+        sleep(200);
+    for (let i = 0; i < 3; i++) {
+        if (i > 0)
+            sleep(500);
+        if (launchctl(["bootstrap", domain, ctx.paths.plist]).ok)
+            return true;
+    }
+    return false;
+}
+/**
+ * Every item a setup made before the plugin left must have an answer: why not, or null. An answer for an item that is
+ * no longer there is fine (setup.md passes the same answers to each run). An MCP server to retire needs Claude Code.
+ */
+function legacyRefusal(items, args, claude) {
+    const open = items.filter((l) => !args.retire.includes(l.id) && !args.keep.includes(l.id));
+    if (open.length) {
+        return `Setup found things set up before the plugin. Answer each with --retire '<id>' (moved to a backup folder, nothing deleted) or --keep '<id>': ${open.map((l) => `${l.id} (${l.description} ${l.path})`).join("; ")}.`;
+    }
+    const mcp = items.find((l) => l.kind === "mcp" && args.retire.includes(l.id));
+    if (mcp && !claude)
+        return CLAUDE_NEEDED(mcp);
+    return null;
+}
+/** Claude Code, to remove an MCP server: the tests' runner, else the claude the job would run, else null. */
+const claudeRunFor = (ctx) => {
+    if (ctx.claudeRun)
+        return ctx.claudeRun;
+    const c = claudeFor(ctx);
+    return c ? realClaudeRun(c.real, ctx.env) : null;
+};
+/** Retires or keeps each item as the answers say, one step each. False when one could not be retired. */
+function applyLegacy(ctx, items, retire, say, opts) {
+    let ok = true;
+    const claude = claudeRunFor(ctx);
+    for (const item of items) {
+        // Replaced by the new job in installJob, which can put it back on a failure.
+        if (item.id === "job:repo" && retire.includes(item.id) && opts.jobLater)
+            continue;
+        if (!retire.includes(item.id)) {
+            say({ project: null, step: "legacy", outcome: "unchanged", message: keptMessage(item) });
+            continue;
+        }
+        let r;
+        try {
+            r = retireItem(ctx.paths, item, ctx.cwd, { claude, launchctl: ctx.job.launchctl, uid: ctx.job.uid });
+        }
+        catch (err) {
+            r = { ok: false, message: `${item.path} could not be retired: ${err instanceof Error ? err.message : "it could not be moved"}. Nothing was deleted.` };
+        }
+        if (!r.ok)
+            ok = false;
+        say({ project: null, step: "legacy", outcome: r.ok ? "done" : "failed", message: r.message });
+    }
+    return ok;
 }
 const TRY_IT = "Try it: in Product Map, open an entry in a project with the inbox on, mark it for agent input and write what you want. Your agent answers it within a minute or two while this Mac is awake.";
 const SHAPE_ONLY = "Done. To have your agent answer requests on this Mac later, run setup again with --role build and --clone or --copy <folder>.";
@@ -831,7 +988,7 @@ const SHAPE_ONLY = "Done. To have your agent answer requests on this Mac later, 
  */
 export async function runSetup(ctx, args) {
     const server = serverFrom(args.server, ctx.env);
-    const result = { ok: false, server, signed_in: false, refused: [], steps: [], next: null };
+    const result = { ok: false, server, signed_in: false, changed: false, refused: [], steps: [], next: null };
     const say = (s) => {
         result.steps.push(s);
         if (!args.json)
@@ -855,6 +1012,30 @@ export async function runSetup(ctx, args) {
             if (!yes(await ctx.ask("Use it? Type yes to go on: ")))
                 throw new Error("Stopped: nothing was changed.");
         }
+    }
+    // A setup made before the plugin: every item needs the person's answer, checked before anything changes.
+    const legacy = legacyOf(ctx, args);
+    if (args.yes) {
+        const why = legacyRefusal(legacy, args, legacy.some((l) => l.kind === "mcp" && args.retire.includes(l.id)) ? claudeRunFor(ctx) : null);
+        if (why) {
+            refuse(why);
+            if (!args.json)
+                ctx.print("Nothing was changed.");
+            return result;
+        }
+    }
+    else if (legacy.length) {
+        ctx.print(`Setup found things set up before the plugin. Retiring one moves it to ${retiredDay(ctx.paths, new Date())}, keeping its path; nothing is deleted.`);
+        for (const l of legacy) {
+            ctx.print(`${l.description} (${l.path})`);
+            if (yes(await ctx.ask(`Retire it? [y/N] `)))
+                args.retire.push(l.id);
+            else
+                args.keep.push(l.id);
+        }
+        const why = legacyRefusal(legacy, args, legacy.some((l) => l.kind === "mcp" && args.retire.includes(l.id)) ? claudeRunFor(ctx) : null);
+        if (why)
+            throw new Error(why);
     }
     // The sign-in prints the consent page's address; with --json that goes to stderr so stdout stays one object.
     const toStderr = ctx.warn ?? ctx.print;
@@ -913,10 +1094,28 @@ export async function runSetup(ctx, args) {
     }
     const done = await carryOut(ctx, client, decisions, say);
     let ok = done.ok;
+    // Read again: an answer for an item that went in the meantime is nothing to do.
+    const found = !done.stopped && legacy.length ? findLegacy(ctx.paths, ctx.cwd, { platform: ctx.job.platform }) : [];
+    const jobFound = found.some((l) => l.id === "job:repo");
+    const retireJob = jobFound && args.retire.includes("job:repo") && done.inboxOn && isMac(ctx);
+    if (found.length)
+        ok = applyLegacy(ctx, found, args.retire, say, { jobLater: retireJob }) && ok;
+    const keepJob = jobFound && args.keep.includes("job:repo");
     if (done.inboxOn)
-        ok = installJob(ctx, say) && ok;
+        ok = installJob(ctx, say, { pluginVersion: args.pluginVersion, keepJob, retireJob }) && ok;
     result.ok = ok;
+    result.changed = result.steps.some((x) => x.outcome === "done");
+    // The plugin's version, over the inbox's own connection, for the Connected agents page: only after a setup that went
+    // through, and never counted as a change.
+    if (args.pluginVersion && ok) {
+        const why = await reportSetup(client, args.pluginVersion);
+        say({ project: null, step: "version", outcome: why ? "skipped" : "done", message: why
+                ? `Product Map did not record the plugin's version (${why}). Nothing else depends on it.`
+                : `Told Product Map this is plugin ${args.pluginVersion}, for its Connected agents page.` });
+    }
     result.next = done.inboxOn ? TRY_IT : decisions.length ? SHAPE_ONLY : null;
+    if (!result.changed && ok && !args.json)
+        ctx.print("Nothing changed: everything was already set up.");
     if (result.next && !args.json)
         ctx.print(result.next);
     return result;

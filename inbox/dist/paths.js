@@ -30,6 +30,9 @@ export function pathsFor(home) {
         reposDir: join(home, ".product-map-inbox", "repos"),
         knownHosts: join(configDir, "github_known_hosts"),
         settings: join(configDir, "agent-inbox-settings.json"),
+        retiredDir: join(home, ".product-map-inbox", "retired"),
+        userSkills: join(home, ".claude", "skills"),
+        claudeJson: join(home, ".claude.json"),
     };
 }
 /** The server address: the flag, then the environment variable, then the hosted server. No trailing slash. */

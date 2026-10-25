@@ -196,6 +196,36 @@ export async function setContribution(client, project, role) {
     const d = toolJson(text);
     return { project: typeof d.project === "string" ? d.project : project, contribution: contributionOf(d.contribution) };
 }
+/** A plugin version as `report_setup` takes it (the server holds it to the same shape and 64 characters). */
+export const PLUGIN_VERSION = /^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(-[0-9A-Za-z.-]{1,40})?$/;
+/**
+ * Tells Product Map which plugin version set up this sign-in's connection (`report_setup`, PDM-55 WU-09), for the
+ * Connected agents page. Null when it was recorded; otherwise why not, in plain words (a server without the tool, a
+ * refusal, no answer). It never throws: setup has done its work by then, and this is only a note on it.
+ */
+export async function reportSetup(client, version) {
+    try {
+        const a = await client.callTool("report_setup", { version });
+        if (!a.isError) {
+            let reported;
+            try {
+                reported = toolJson(a.text).reported;
+            }
+            catch {
+                reported = undefined;
+            }
+            return reported === true ? null : "this sign-in has no agent connection";
+        }
+        if (/^unknown tool\b/i.test(a.text.trim()))
+            return "this Product Map server does not take a version yet";
+        return a.text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ").replace(/ {2,}/g, " ").trim().slice(0, 300) || "Product Map refused it";
+    }
+    catch (err) {
+        if (err instanceof RpcError && err.code === -32602)
+            return "this Product Map server does not take a version yet";
+        return err instanceof Error ? err.message : "Product Map could not be reached";
+    }
+}
 /** A repo's name as Product Map holds it (`project_repos.name`): a slug of at most 40 characters. */
 export const REPO_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const REPO_NAME_MAX = 40;
