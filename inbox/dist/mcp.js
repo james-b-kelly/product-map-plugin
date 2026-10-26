@@ -1,7 +1,7 @@
 // A minimal MCP client over the streamable HTTP transport: JSON-RPC POSTs with the bearer token, plain JSON or SSE
 // answers. A 401 refreshes the sign-in once and tries again.
 import { createHash } from "node:crypto";
-import { FETCH_OPTIONS, fetchSignal, freshAuth, ServerUnavailable, SignInNeeded } from "./auth.js";
+import { FETCH_OPTIONS, fetchSignal, freshAuth, ServerUnavailable, SignInNeeded, unreachable } from "./auth.js";
 export const PROTOCOL_VERSION = "2025-06-18";
 /** Product Map answered a call with a JSON-RPC error (`code`): -32602 is a tool the server does not have. */
 export class RpcError extends ServerUnavailable {
@@ -42,7 +42,7 @@ export class McpClient {
             });
         }
         catch {
-            throw new ServerUnavailable("Could not reach Product Map.");
+            throw unreachable();
         }
         if (r.status === 401 && !retried) {
             this.auth = await freshAuth(this.paths, { fetch: this.fetchFn, now: this.now, rejected: this.auth.access_token ?? "" });

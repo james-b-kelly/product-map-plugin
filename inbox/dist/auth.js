@@ -21,6 +21,29 @@ export class ServerUnavailable extends Error {
         this.name = "ServerUnavailable";
     }
 }
+/** What Claude Code's sandbox looks like from inside: Claude Code's own marker, and a proxy on this machine that every
+ *  request must go through. Node's fetch does not use that proxy, so a request from the sandbox can never connect. */
+export function inClaudeSandbox(env = process.env) {
+    if (!env.CLAUDECODE)
+        return false;
+    for (const name of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) {
+        const v = env[name];
+        if (!v)
+            continue;
+        try {
+            const host = new URL(v).hostname.replace(/^\[|\]$/g, "");
+            if (host === "localhost" || host === "127.0.0.1" || host === "::1")
+                return true;
+        }
+        catch { /* not a URL: not the sandbox's proxy */ }
+    }
+    return false;
+}
+export const SANDBOX_BLOCKS = "Claude Code's sandbox is blocking it. Setup has to run outside the sandbox: approve running it outside the sandbox, or type the same command yourself with ! in front.";
+/** "Could not reach Product Map", saying so when Claude Code's sandbox is the likely cause. */
+export function unreachable(what = "Could not reach Product Map.", env = process.env) {
+    return new ServerUnavailable(inClaudeSandbox(env) ? `${what} ${SANDBOX_BLOCKS}` : what);
+}
 const b64url = (buf) => buf.toString("base64url");
 export const newVerifier = () => b64url(randomBytes(32));
 export const challengeFor = (verifier) => b64url(createHash("sha256").update(verifier).digest());
@@ -62,7 +85,7 @@ async function tokenRequest(fetchFn, server, form) {
         });
     }
     catch {
-        throw new ServerUnavailable("Could not reach Product Map.");
+        throw unreachable();
     }
     let body = {};
     try {
@@ -198,7 +221,7 @@ async function registerClient(fetchFn, server, redirectUri) {
         });
     }
     catch {
-        throw new ServerUnavailable("Could not reach Product Map to register this machine.");
+        throw unreachable("Could not reach Product Map to register this machine.");
     }
     if (r.status === 429)
         throw new ServerUnavailable("Too many sign-ins from this address. Wait an hour and try again.");
