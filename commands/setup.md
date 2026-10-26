@@ -8,9 +8,11 @@ allowed-tools: Bash(test:*), AskUserQuestion
 
 Set up Product Map for the person on this machine, by running the agent inbox bundled with this plugin. Everything it changes is done by that program, from the person's answers. Claude Code asks the person's permission before each run of it: that is expected, so say so once at the start. Ask with tappable choices (AskUserQuestion), one question at a time, in plain, short sentences.
 
+**Say first what the agent inbox is.** Before anything else, and before the word "inbox" comes up, tell the person in two or three plain sentences: "Setup uses the agent inbox, a small program this plugin carries. It signs this Mac in to Product Map and, for projects you build, links the project's code. If you turn it on, it also answers requests for your agent in the background: when someone marks an entry for agent input, this Mac runs Claude Code on it and replies on the entry." From then on, call it "the inbox".
+
 **The program.** Every command below is `node "${CLAUDE_PLUGIN_ROOT}/inbox/dist/cli.js"` followed by its arguments. Call it `INBOX` in your head, but always run it with the full path. Run each one with the Bash tool and a timeout of 600000 (ten minutes): signing in waits up to five minutes for the browser, and a clone can take a while. Never run any other command to change the setup, never edit the inbox's files in `~/.config/product-map/` yourself, and never move, edit or delete the skills, servers or job setup finds (step 3b) yourself.
 
-**The version.** This is version 0.3.0 of the plugin. Every `setup` command below also takes `--plugin-version '0.3.0'`, the `--plan` ones too: from it the inbox knows it runs from the plugin, looks for what was set up before the plugin, and at the end tells Product Map this version, which its Connected agents page shows.
+**The version.** This is version 0.3.1 of the plugin. Every `setup` command below also takes `--plugin-version '0.3.1'`, the `--plan` ones too: from it the inbox knows it runs from the plugin, looks for what was set up before the plugin, and at the end tells Product Map this version, which its Connected agents page shows.
 
 **Running it again** is safe and expected (after an update of the plugin, or to change an answer): what is right is kept, what has drifted is fixed, and each step says what it did. Each result has `changed`. Say "Nothing changed: everything was already set up." only when every command you ran returned `changed: false`.
 
@@ -25,7 +27,7 @@ Set up Product Map for the person on this machine, by running the agent inbox bu
 
 ## 1. Look
 
-Run `INBOX setup --plan --json --plugin-version '0.3.0'`. It changes nothing. If the Bash tool cannot run `node`, say Node 20 or later is needed (nodejs.org) and stop. The output is one JSON object:
+Run `INBOX setup --plan --json --plugin-version '0.3.1'`. It changes nothing. If the Bash tool cannot run `node`, say Node 20 or later is needed (nodejs.org) and stop. The output is one JSON object:
 
 - `server`, `hosted`: if `hosted` is false, say this machine points at another Product Map server (`server`, from `PRODUCT_MAP_MCP_URL`), that setup here works with the hosted Product Map only, and stop.
 - `signed_in`, `problem`: a `problem` is said as it is, then stop.
@@ -38,7 +40,7 @@ Tell the person what it found in a few short lines: signed in or not, each proje
 
 ## 2. Sign in
 
-If `signed_in` is false, say: "First, sign in. Your browser will open Product Map's page to approve this machine; approve it there." Then run `INBOX login`. When it ends, run the look in step 1 again. If the sign-in failed or timed out, show what it said and say: run /product-map:setup again.
+If `signed_in` is false, say: "First, the inbox signs this Mac in. Your browser will open Product Map's page to approve it; approve it there." Then run `INBOX login`. When it ends, run the look in step 1 again. If the sign-in failed or timed out, show what it said and say: run /product-map:setup again.
 
 If `projects` is empty, say: "This sign-in reaches no projects yet. Add one on Product Map's Connected agents page, then run /product-map:setup again." Stop.
 
@@ -48,14 +50,16 @@ With one project, use it. With several, ask which to set up (several may be chos
 
 For each chosen project, ask the person's role there:
 
-- **Shape**: you write and discuss the work (entries, briefs, plans, comments).
-- **Build**: you build it too, and your agent can pick up work units.
+- **Shape**: "You write, discuss and/or design the work: entries, briefs, plans and comments. Your agent helps with those and doesn't write code."
+- **Build**: "Everything in Shape, and your agent also picks up work units and writes code in the project's repo."
+
+Always offer Shape first and Build second, and mark neither as recommended: the choice is the person's. Each option is read on its own, so its text must not lean on the other.
 
 When `role` is `commenter` or `viewer`, do not offer Build: say they can comment on (or view) the project, so their role there is Shape, because Build needs edit access. When a role is set already (`contribution`), say so and offer to keep it.
 
 Shape has nothing more to set up: no repo, no folder, no background job.
 
-If any project is Build, look again with the roles chosen, so its repos and copies are read: `INBOX setup --plan --json --plugin-version '0.3.0'` with `--project '<organisation>/<project>' --role '<role>'` for each chosen project. Use this answer from here on. (The first look reads no repos for a project whose role was Shape.)
+If any project is Build, look again with the roles chosen, so its repos and copies are read: `INBOX setup --plan --json --plugin-version '0.3.1'` with `--project '<organisation>/<project>' --role '<role>'` for each chosen project. Use this answer from here on. (The first look reads no repos for a project whose role was Shape.)
 
 ## 3b. Set up before the plugin
 
@@ -74,7 +78,7 @@ If no chosen project is Build, go to step 5 with every project's `--role` and `-
 
 If `job.supported` is false, say the background job is macOS only for now, and treat the answer below as no.
 
-Otherwise ask once: **"Should your agent answer requests in the background?"** Explain in one line: when you mark an entry in Product Map for agent input, this Mac runs Claude Code on it within a minute or two and answers on the entry, while the Mac is awake.
+Otherwise ask once: **"Should your agent answer requests in the background?"** Explain in one line, following on from what was said at the start: this turns on the inbox's background job, so when an entry in Product Map is marked for agent input, this Mac runs Claude Code on it within a minute or two and answers on the entry, while the Mac is awake. It is optional: everything else works without it.
 
 - **No**: go to step 5 with `--no-inbox`. At the end say: to turn it on later, run /product-map:setup again. If a project already has a folder linked (`folder` set), say the link stays and requests for that project may still run there while the job is installed; to remove it, run `INBOX unlink '<organisation>/<project>'` (offer to run it; a copy the inbox kept stays on disk at its path, to delete by hand).
 - **Yes**: first say: "Your agent reads the project's code from a folder on this Mac. Link only folders you trust, and only ones whose CLAUDE.md holds nothing secret: a run is given that file and could repeat it into a comment." Then for each Build project, in order:
@@ -89,7 +93,7 @@ Otherwise ask once: **"Should your agent answer requests in the background?"** E
 
 ## 5. The commands
 
-Build the arguments from the answers, every one in single quotes. Every command starts `INBOX setup --yes --json --plugin-version '0.3.0'` and carries every `--retire '<id>'` and `--keep '<id>'` from step 3b (the same answers on each command: an item already retired by the first is nothing to do for the second). One exception, `job:repo` retired: pass `--retire 'job:repo'` only on the command that turns the inbox on (the second), and `--keep 'job:repo'` on the other; when no command turns the inbox on, pass `--retire 'job:repo'` on the `--no-inbox` command, which then only stops the job. Flags after `--project '<organisation>/<project>'` apply to that project only: `--role 'shape'` or `--role 'build'`, then for a Build project with the inbox on `--clone` or `--copy '<path>'` (with `--allow-unverified-folder` when chosen in 4.3), `--repo '<name>'` when it has several repos, and `--replace` only as step 4.1 says. A project whose folder is kept takes no folder flag. Every command names at least one `--project`: never run `setup --yes` without one, since it would then work on every project.
+Build the arguments from the answers, every one in single quotes. Every command starts `INBOX setup --yes --json --plugin-version '0.3.1'` and carries every `--retire '<id>'` and `--keep '<id>'` from step 3b (the same answers on each command: an item already retired by the first is nothing to do for the second). One exception, `job:repo` retired: pass `--retire 'job:repo'` only on the command that turns the inbox on (the second), and `--keep 'job:repo'` on the other; when no command turns the inbox on, pass `--retire 'job:repo'` on the `--no-inbox` command, which then only stops the job. Flags after `--project '<organisation>/<project>'` apply to that project only: `--role 'shape'` or `--role 'build'`, then for a Build project with the inbox on `--clone` or `--copy '<path>'` (with `--allow-unverified-folder` when chosen in 4.3), `--repo '<name>'` when it has several repos, and `--replace` only as step 4.1 says. A project whose folder is kept takes no folder flag. Every command names at least one `--project`: never run `setup --yes` without one, since it would then work on every project.
 
 - The projects that are Shape or have the inbox off: `INBOX setup --yes --no-inbox --json` with each of them and its `--role`. Skip this when there are none.
 - The projects with the inbox on: then `INBOX setup --yes --json` with each of them, its `--role` and its folder flags. Skip this when there are none (the answer was no, every project is Shape, or every Build project ended with the inbox off).
@@ -114,7 +118,7 @@ Say what was done, project by project, in a few lines from the `message`s. For s
 
 ## 7. Finish
 
-If any project has the inbox on, run `INBOX setup --plan --json --plugin-version '0.3.0'` once more, and for each project's `folder.path` check for a `CLAUDE.md` at its top (`test -f '<path>/CLAUDE.md'`, the path checked for a single quote first, as above). Name each folder with none: a run is given the folder's CLAUDE.md as background, so without one the agent knows less about where things are in that code.
+If any project has the inbox on, run `INBOX setup --plan --json --plugin-version '0.3.1'` once more, and for each project's `folder.path` check for a `CLAUDE.md` at its top (`test -f '<path>/CLAUDE.md'`, the path checked for a single quote first, as above). Name each folder with none: a run is given the folder's CLAUDE.md as background, so without one the agent knows less about where things are in that code.
 
 Then, when the inbox is on, say how to try it: in Product Map, open an entry in that project, mark it for agent input and write what you want. The answer comes within a minute or two while this Mac is awake. `INBOX status` shows the sign-in, the folders and the job.
 
