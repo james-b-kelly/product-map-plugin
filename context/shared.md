@@ -25,7 +25,7 @@ The process is as heavy as the work needs, and no heavier. Choose the path for e
 | The work needs alignment or sign-off: other people should agree what is built, it changes what people see or do in ways they will want a say in, or what to build is still open | **A brief first.** `create_brief` with the entry as its source, drafted with `/product-map:draft-brief`. Its plan comes once it is published. |
 
 - **When it isn't clear which,** name the path you would take and why, and ask the person before creating anything.
-- **A lone unit that turns out to need a second** once it is started just gets the second added beside it. Do not make a plan after the fact.
+- **A lone unit that turns out to need a second** once it is started just gets the second added beside it. Do not make a plan after the fact. This covers only a second piece found while building the first. Separate work added on purpose, or a second unit added before the first has started, means a plan from the start: `create_unit` with `plan: 0` still adds it, and its `note` says so. A person can turn the work units with no plan into a plan in Product Map (Make it a plan) while they are all drafts.
 - **It is a judgement, not a check.** Product Map accepts any of these shapes; the rule is yours to apply. Examples:
   - "The Save button on the settings page is misaligned, fix it." One unit.
   - "Fix these three typos and the broken link in the footer." One unit: it is one change.
