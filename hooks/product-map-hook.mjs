@@ -9,15 +9,22 @@
 //                  has claimed no unit of that project. `PRODUCT_MAP_SKIP_UNIT_CHECK=1` on that simple command skips it.
 //   pre-worktree   PreToolUse on Claude Code's EnterWorktree when it makes a new worktree: the same check.
 //   session-start  SessionStart: in a linked repository, gives the session the plugin's way-of-working context.
+//   wait-event     (PDM-63 WU-03, async) Notification, PreToolUse, PostToolUse, UserPromptSubmit, Stop and
+//                  SessionEnd: says what the units this session holds are waiting on. A permission prompt is
+//                  `permission`, an MCP server's question or AskUserQuestion is `answer`, over each unit's own wait
+//                  from the agent; the next PostToolUse, prompt, turn's end or session's end clears it (a prompt also
+//                  clears an `answer` the agent set). It reaches Product Map through the inbox this plugin
+//                  carries (`inbox/dist/cli.js wait`), with this machine's sign-in from /product-map:setup: without it,
+//                  nothing is sent. A session that holds no unit does nothing.
 //
 // An advisory guard, not a security boundary: it reads commands on a best-effort basis and fails open. Anything it
 // cannot read for sure (a path built from a variable, `eval`, a script) goes through. What "linked" means on this
 // machine: a folder setup linked for the inbox (~/.config/product-map/agent-inbox-folders.json, Build only) or a
-// repository list_repos returned for a project. Nothing here reaches Product Map: what it knows comes from the
-// session's own tool results and setup's file. It must be quick, and any error of its own lets the command through,
+// repository list_repos returned for a project. Only wait-event reaches Product Map, through the inbox: what the
+// rest knows comes from the session's own tool results and setup's file. It must be quick, and any error of its own lets the command through,
 // silently. No dependencies; node only.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,12 +144,14 @@ const sameUnit = (a, b) => a.project === b.project && a.of === b.of && a.slug ==
   (a.plan === null || b.plan === null || a.plan === b.plan);
 
 function forgetOldClaims() {
-  const dir = join(dataDir(), "claims");
-  let names = [];
-  try { names = readdirSync(dir); } catch { return; }
   const cutoff = Date.now() - CLAIM_DAYS * 86_400_000;
-  for (const n of names) {
-    try { if (statSync(join(dir, n)).mtimeMs < cutoff) rmSync(join(dir, n), { force: true }); } catch { /* next */ }
+  // What the waiting hook keeps (PDM-63 WU-03) goes the same way; a lock folder there is only ever empty.
+  for (const dir of [join(dataDir(), "claims"), join(dataDir(), "waits")]) {
+    let names = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names) {
+      try { if (statSync(join(dir, n)).mtimeMs < cutoff) rmSync(join(dir, n), { recursive: true, force: true }); } catch { /* next */ }
+    }
   }
 }
 
@@ -184,11 +193,26 @@ export function record(input) {
   const claims = (readJson(file, {}).claims ?? []).filter((c) => c && typeof c === "object");
   if (tool === "pick_up_unit") {
     if (!pickedUp(result)) return;
-    writeJson(file, { claims: [...claims.filter((c) => !sameUnit(c, key)), { ...key, at: new Date().toISOString() }] });
+    // The session the model passed: the one Product Map holds the claim in, which wait-event names.
+    const claim = { ...key, session: safeSession(args.session), at: new Date().toISOString() };
+    writeJson(file, { claims: [...claims.filter((c) => !sameUnit(c, key)), claim] });
     forgetOldClaims();
-  } else if (tool === "release_unit" || (tool === "set_unit_state" && ENDS_CLAIM.has(args.state))) {
+    const w = waitOf(result.unit.waiting);
+    recordAgentWait(session, claim, { agent: w, sent: w });
+    return;
+  }
+  const claim = claims.find((c) => sameUnit(c, key));
+  if (tool === "release_unit" || (tool === "set_unit_state" && ENDS_CLAIM.has(args.state))) {
     const left = claims.filter((c) => !sameUnit(c, key));
     if (left.length !== claims.length) writeJson(file, { claims: left });
+    // The claim is over, and Product Map cleared the wait with it.
+    recordAgentWait(session, claim, { agent: null, sent: null, endsHook: true });
+  } else if (tool === "set_unit_state") {
+    // Product Map clears the wait when the state changes, and keeps it when it does not: not known, so it is sent again.
+    recordAgentWait(session, claim, { agent: null, sent: undefined, endsHook: true });
+  } else if (tool === "set_waiting") {
+    const w = waitOf(result.waiting);
+    recordAgentWait(session, claim, { agent: w, sent: w, endsHook: true });
   }
 }
 
@@ -546,6 +570,223 @@ export function sessionStart(input) {
   };
 }
 
+// ---- wait-event (PDM-63 WU-03) ----
+
+const WAIT_KIND = /^[a-z][a-z0-9_]{0,39}$/;
+const STATE_LOCK_WAIT_MS = 3_000;
+const SEND_LOCK_WAIT_MS = 8_000;
+const LOCK_STALE_MS = 60_000;
+const WAIT_SEND_MS = 15_000;
+/** A PostToolUse this soon after a hook's wait was set is taken as the tool before it, not the answer. */
+const CLEAR_GRACE_MS = 1_500;
+/** A send refused on this many events for the same wait is not tried again until the wait changes. */
+const MAX_FAILS = 5;
+const MAX_UNITS = 5;
+
+// One state file per session, changed only under its state lock:
+//   hook   the wait a hook saw (a permission prompt or a question), for the whole session: it blocks every unit.
+//   agent  each held unit's own wait, as the agent last set it (set_waiting, or what pick_up_unit returned).
+//   sent   what Product Map has for each unit, as far as this machine knows; a unit missing here is not known.
+//   fails  sends refused for a unit's wait, so a refusal that keeps coming (no sign-in, not held) stops being tried.
+// A unit's wait is the hook's while there is one, else the agent's. Sends go one at a time, under the send lock, and
+// the sender goes on until every held unit's wait is what was sent, so the last event wins.
+const waitsDir = () => join(dataDir(), "waits");
+const stateFile = (session) => join(waitsDir(), `${session}.json`);
+
+/** One line of at most 200 characters, as Product Map takes a wait's detail; null when empty. */
+export function oneLine(v) {
+  if (typeof v !== "string") return null;
+  const d = v.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim();
+  if (!d) return null;
+  const chars = [...d];
+  return chars.length <= 200 ? d : chars.slice(0, 199).join("") + "…";
+}
+const waitOf = (w) => (w && typeof w === "object" && typeof w.kind === "string" && WAIT_KIND.test(w.kind) ? { kind: w.kind, detail: oneLine(w.detail) } : null);
+const sameWait = (a, b) => (a?.kind ?? null) === (b?.kind ?? null) && (a?.detail ?? null) === (b?.detail ?? null);
+const sig = (w) => (w ? `${w.kind}:${w.detail ?? ""}` : "none");
+/** A held unit's key in the state file: what names it, as the claim has it. */
+const unitId = (c) => `${c.project}|${c.of}|${c.slug}|${Number.isInteger(c.plan) ? c.plan : ""}|${c.unit}`;
+
+function readState(session) {
+  const raw = readJson(stateFile(session), {});
+  const map = (v, f) => {
+    const out = Object.create(null);
+    if (v && typeof v === "object" && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) { const y = f(x); if (y !== undefined) out[k] = y; }
+    return out;
+  };
+  const hook = waitOf(raw?.hook);
+  return {
+    hook: hook ? { ...hook, at: Number.isFinite(raw.hook.at) ? raw.hook.at : 0 } : null,
+    agent: map(raw?.agent, (x) => waitOf(x) ?? undefined),
+    sent: map(raw?.sent, (x) => waitOf(x)),
+    fails: map(raw?.fails, (x) => (x && Number.isInteger(x.n) && typeof x.want === "string" ? { n: x.n, want: x.want } : undefined)),
+  };
+}
+const desired = (st, id) => (st.hook ? { kind: st.hook.kind, detail: st.hook.detail } : st.agent[id] ?? null);
+
+const pause = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* go on */ } };
+/**
+ * A lock folder, made or waited for. One untouched for a minute was left by a hook that died: it is moved aside
+ * (only one waiter's rename wins) and made again. Returns the release, or null when it could not be had in time.
+ */
+function lockFolder(path, waitMs) {
+  const until = Date.now() + waitMs;
+  try { mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); } catch { return null; }
+  for (;;) {
+    if (Date.now() > until) return null;
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      return () => { try { rmSync(path, { recursive: true, force: true }); } catch { /* stale in a minute */ } };
+    } catch (err) {
+      if (err?.code !== "EEXIST") return null;
+    }
+    try {
+      if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
+        const aside = `${path}.stale.${process.pid}.${Date.now()}`;
+        renameSync(path, aside);
+        rmSync(aside, { recursive: true, force: true });
+        continue;
+      }
+    } catch { /* gone or taken: try again */ }
+    pause(50);
+  }
+}
+const touch = (path) => { try { const t = new Date(); utimesSync(path, t, t); } catch { /* go on */ } };
+
+/** Changes the session's state under its lock; skipped (failing open) when the lock cannot be had. */
+function changeState(session, change) {
+  const release = lockFolder(join(waitsDir(), `${session}.state.lock`), STATE_LOCK_WAIT_MS);
+  if (!release) return false;
+  try {
+    const st = readState(session);
+    change(st);
+    writeJson(stateFile(session), st);
+    return true;
+  } finally { release(); }
+}
+
+/** The units this session holds, with the session Product Map holds them in. A claim recorded without one is left out. */
+function heldUnits(session) {
+  const claims = readJson(claimsFile(session), {}).claims;
+  return Array.isArray(claims) ? claims.filter((c) => c && projectName(c.project) && safeSession(c.session) && typeof c.slug === "string" && Number.isInteger(c.unit)) : [];
+}
+
+/** record's part: what the agent set, or what Product Map did with the unit's wait. `w` undefined forgets what was sent. */
+function recordAgentWait(session, claim, change) {
+  if (!claim || (!existsSync(stateFile(session)) && change.agent === null && change.sent === null)) return;
+  const id = unitId(claim);
+  changeState(session, (st) => {
+    // The agent is acting, so a prompt or question a hook saw is over.
+    if (change.endsHook) st.hook = null;
+    if (change.agent === undefined) { /* keep */ } else if (change.agent) st.agent[id] = change.agent; else delete st.agent[id];
+    if (change.sent === undefined) delete st.sent[id]; else st.sent[id] = change.sent;
+    delete st.fails[id];
+  });
+}
+
+function inboxCli() {
+  const root = process.env.CLAUDE_PLUGIN_ROOT || resolve(here, "..");
+  const p = join(root, "inbox", "dist", "cli.js");
+  return existsSync(p) ? p : null;
+}
+
+/** The inbox's exit code: 0 taken, 1 refused or not reached (worth another try), 2 flags it cannot use (never). */
+function sendWait(cli, unit, wait) {
+  const args = [cli, "wait", `--project=${unit.project}`, `--slug=${unit.slug}`, `--unit=${unit.unit}`, `--session=${unit.session}`, `--kind=${wait ? wait.kind : "none"}`];
+  if (unit.of === "entry") args.push("--of=entry");
+  if (Number.isInteger(unit.plan)) args.push(`--plan=${unit.plan}`);
+  if (wait?.detail) args.push(`--detail=${wait.detail}`);
+  try { return spawnSync(process.execPath, args, { stdio: "ignore", timeout: WAIT_SEND_MS }).status ?? 1; } catch { return 1; }
+}
+
+/** The held units whose wait is not what was sent, leaving out a wait refused MAX_FAILS times. */
+function toSend(session, st) {
+  return heldUnits(session).slice(0, MAX_UNITS).filter((u) => {
+    const id = unitId(u);
+    const want = desired(st, id);
+    if (id in st.sent && sameWait(want, st.sent[id])) return false;
+    const f = st.fails[id];
+    return !(f && f.want === sig(want) && f.n >= MAX_FAILS);
+  });
+}
+
+function syncWait(session) {
+  const cli = inboxCli();
+  if (!cli) return;
+  const lock = join(waitsDir(), `${session}.send.lock`);
+  const release = lockFolder(lock, SEND_LOCK_WAIT_MS);
+  if (!release) return;
+  try {
+    for (let round = 0; round < 4; round++) {
+      const st = readState(session);
+      const todo = toSend(session, st);
+      if (!todo.length) return;
+      const done = todo.map((u) => {
+        const want = desired(st, unitId(u));
+        touch(lock);
+        return { id: unitId(u), want, code: sendWait(cli, u, want) };
+      });
+      // What was sent is what Product Map has now, whatever is wanted since; the next round sends any change.
+      if (!changeState(session, (now) => {
+        for (const d of done) {
+          if (d.code === 0) { now.sent[d.id] = d.want; delete now.fails[d.id]; continue; }
+          const f = now.fails[d.id];
+          now.fails[d.id] = { n: d.code === 2 ? MAX_FAILS : f && f.want === sig(d.want) ? f.n + 1 : 1, want: sig(d.want) };
+        }
+      })) return;
+      // A refusal counts once per event: the next event tries again, so a moment offline does not use up the tries.
+      if (done.some((d) => d.code !== 0)) return;
+    }
+  } finally { release(); }
+}
+
+/** What the event does to the session's state, or null for nothing. */
+export function waitChange(input, st, now = Date.now()) {
+  const event = input.hook_event_name;
+  const tool = String(input.tool_name ?? "");
+  if (event === "Notification") {
+    const t = input.notification_type;
+    // Claude Code's own words for a permission prompt; an MCP server's question is its own text, so it is not sent.
+    if (t === "permission_prompt") return (s) => { s.hook = { kind: "permission", detail: oneLine(input.message), at: now }; };
+    if (t === "elicitation_dialog" || t === "elicitation_url_dialog") return (s) => { s.hook = { kind: "answer", detail: null, at: now }; };
+    return null;
+  }
+  if (event === "PreToolUse") {
+    if (tool !== "AskUserQuestion") return null;
+    // The question's short header only: the question itself may hold what the person would not share.
+    const q = Array.isArray(input.tool_input?.questions) ? input.tool_input.questions[0] : null;
+    return (s) => { s.hook = { kind: "answer", detail: oneLine(q?.header), at: now }; };
+  }
+  if (event === "PostToolUse") {
+    if (!st.hook || now - st.hook.at < CLEAR_GRACE_MS) return null;
+    return (s) => { s.hook = null; };
+  }
+  if (event === "UserPromptSubmit" || event === "Stop" || event === "SessionEnd") {
+    // The person's prompt is also the answer an agent waited for.
+    const answered = event === "UserPromptSubmit" ? Object.keys(st.agent).filter((id) => st.agent[id].kind === "answer") : [];
+    if (!st.hook && !answered.length) return null;
+    return (s) => { s.hook = null; for (const id of answered) delete s.agent[id]; };
+  }
+  return null;
+}
+
+export function waitEvent(input) {
+  const session = safeSession(input.session_id);
+  if (!session) return null;
+  // Most events find no state and set nothing, and stop here.
+  const known = existsSync(stateFile(session));
+  const st = readState(session);
+  const change = waitChange(input, st);
+  if (!change && !known) return null;
+  if (change) {
+    if (!known && !heldUnits(session).length) return null;
+    if (!changeState(session, change)) return null;
+  }
+  // Anything not sent yet (a change, or a send that failed) is sent now.
+  if (toSend(session, readState(session)).length) syncWait(session);
+  return null;
+}
+
 // ---- The entry point ----
 
 async function readStdin() {
@@ -554,7 +795,7 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-const MODES = new Map([["record", record], ["pre-bash", preBash], ["pre-worktree", preWorktree], ["session-start", sessionStart]]);
+const MODES = new Map([["record", record], ["pre-bash", preBash], ["pre-worktree", preWorktree], ["session-start", sessionStart], ["wait-event", waitEvent]]);
 
 async function main() {
   const mode = MODES.get(process.argv[2]);

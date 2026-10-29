@@ -7,6 +7,7 @@ import { SignInNeeded } from "./auth.js";
 import { cloneCommand, webCommand, installCommand, linkCommand, loginCommand, logoutCommand, pollCommand, statusCommand, uninstallCommand, unlinkCommand, } from "./commands.js";
 import { parseSetupArgs, setupCommand } from "./setup.js";
 import { pathsFor } from "./paths.js";
+import { parseWaitArgs, sendWait } from "./wait.js";
 const USAGE = `Usage: npx product-map-inbox <command>
 
   setup                           in a terminal: sign in, choose your role in each project and,
@@ -30,6 +31,11 @@ const USAGE = `Usage: npx product-map-inbox <command>
   poll                            one tick (what the job runs every minute)
   install | uninstall             the background job (macOS)
   status                          sign-in, folders, job and the last tick
+  wait --project <org>/<project> [--of entry] --slug <id> [--plan <n>] --unit <n>
+       --session <id> --kind <kind>|none [--detail <one line>]
+                                  say what a unit this person holds is waiting on (the
+                                  Product Map plugin's hooks run it); quiet, exit 0 when taken;
+                                  always the server this machine signed in to
 
 The server is --server, else PRODUCT_MAP_MCP_URL, else the hosted Product Map.`;
 function openBrowser(url) {
@@ -59,6 +65,21 @@ function flag(args, name) {
 }
 async function main(argv) {
     const [command, ...raw] = argv;
+    // wait is for the plugin's hooks: its own flags, no terminal, nothing on stdout.
+    if (command === "wait") {
+        const args = parseWaitArgs(raw);
+        if ("error" in args) {
+            console.error(args.error);
+            return 2;
+        }
+        try {
+            return (await sendWait(pathsFor(homedir()), args)) ? 0 : 1;
+        }
+        catch (err) {
+            console.error(err instanceof Error ? err.message : "Could not reach Product Map.");
+            return 1;
+        }
+    }
     // setup reads its own flags: some of them apply to the --project before them.
     let setupArgs = null;
     if (command === "setup") {

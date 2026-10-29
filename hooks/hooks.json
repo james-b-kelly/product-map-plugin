@@ -1,5 +1,5 @@
 {
-  "description": "Product Map: records the work unit a session claims, holds back a new branch, worktree or pull request in a linked repository until one is claimed, and gives a session in a linked repository the way of working.",
+  "description": "Product Map: records the work unit a session claims, holds back a new branch, worktree or pull request in a linked repository until one is claimed, gives a session in a linked repository the way of working, and says in Product Map when the session's unit is waiting on the person (a permission prompt or a question).",
   "hooks": {
     "SessionStart": [
       {
@@ -11,9 +11,15 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^mcp__(plugin_product-map_product-map|product-map)__(pick_up_unit|release_unit|set_unit_state|list_projects|list_repos|set_contribution)$",
+        "matcher": "^mcp__(plugin_product-map_product-map|product-map)__(pick_up_unit|release_unit|set_unit_state|set_waiting|list_projects|list_repos|set_contribution)$",
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "record"], "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
         ]
       }
     ],
@@ -28,6 +34,41 @@
         "matcher": "EnterWorktree",
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "pre-worktree"], "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/product-map-hook.mjs", "wait-event"], "timeout": 30, "async": true }
         ]
       }
     ]

@@ -14,7 +14,7 @@ Set up Product Map for the person on this machine, by running the agent inbox bu
 
 **Outside Claude Code's sandbox.** Setup's program cannot work inside Claude Code's sandbox: it signs in over the network (the sandbox only lets traffic out through a proxy that Node does not use), it may clone a repo over SSH, and it writes its files, the background job and any retired items outside this project. So run every program command with the sandbox turned off (the Bash tool's option to run outside the sandbox), whether or not this workspace has the sandbox on. When you say at the start that Claude Code will ask before each run, add in one line: "Setup runs outside Claude Code's sandbox, because it signs this Mac in, may copy a repo and installs files outside this project, so approve running it outside the sandbox when asked." If the person declines a run, do not try it inside the sandbox again: give them the same command with `!` in front to type themselves (Claude Code runs it outside the sandbox and the output comes back here) and carry on from its output. A program error that names Claude Code's sandbox means the command ran inside it: run it again outside, or give the `!` form.
 
-**The version.** This is version 0.3.2 of the plugin. Every `setup` command below also takes `--plugin-version '0.3.2'`, the `--plan` ones too: from it the inbox knows it runs from the plugin, looks for what was set up before the plugin, and at the end tells Product Map this version, which its Connected agents page shows.
+**The version.** This is version 0.4.0 of the plugin. Every `setup` command below also takes `--plugin-version '0.4.0'`, the `--plan` ones too: from it the inbox knows it runs from the plugin, looks for what was set up before the plugin, and at the end tells Product Map this version, which its Connected agents page shows.
 
 **Running it again** is safe and expected (after an update of the plugin, or to change an answer): what is right is kept, what has drifted is fixed, and each step says what it did. Each result has `changed`. Say "Nothing changed: everything was already set up." only when every command you ran returned `changed: false`.
 
@@ -29,7 +29,7 @@ Set up Product Map for the person on this machine, by running the agent inbox bu
 
 ## 1. Look
 
-Run `INBOX setup --plan --json --plugin-version '0.3.2'`. It changes nothing. If the Bash tool cannot run `node`, say Node 20 or later is needed (nodejs.org) and stop. The output is one JSON object:
+Run `INBOX setup --plan --json --plugin-version '0.4.0'`. It changes nothing. If the Bash tool cannot run `node`, say Node 20 or later is needed (nodejs.org) and stop. The output is one JSON object:
 
 - `server`, `hosted`: if `hosted` is false, say this machine points at another Product Map server (`server`, from `PRODUCT_MAP_MCP_URL`), that setup here works with the hosted Product Map only, and stop.
 - `signed_in`, `problem`: a `problem` is said as it is, then stop.
@@ -61,7 +61,7 @@ When `role` is `commenter` or `viewer`, do not offer Build: say they can comment
 
 Shape has nothing more to set up: no repo, no folder, no background job.
 
-If any project is Build, look again with the roles chosen, so its repos and copies are read: `INBOX setup --plan --json --plugin-version '0.3.2'` with `--project '<organisation>/<project>' --role '<role>'` for each chosen project. Use this answer from here on. (The first look reads no repos for a project whose role was Shape.)
+If any project is Build, look again with the roles chosen, so its repos and copies are read: `INBOX setup --plan --json --plugin-version '0.4.0'` with `--project '<organisation>/<project>' --role '<role>'` for each chosen project. Use this answer from here on. (The first look reads no repos for a project whose role was Shape.)
 
 ## 3b. Set up before the plugin
 
@@ -95,7 +95,7 @@ Otherwise ask once: **"Should your agent answer requests in the background?"** E
 
 ## 5. The commands
 
-Build the arguments from the answers, every one in single quotes. Every command starts `INBOX setup --yes --json --plugin-version '0.3.2'` and carries every `--retire '<id>'` and `--keep '<id>'` from step 3b (the same answers on each command: an item already retired by the first is nothing to do for the second). One exception, `job:repo` retired: pass `--retire 'job:repo'` only on the command that turns the inbox on (the second), and `--keep 'job:repo'` on the other; when no command turns the inbox on, pass `--retire 'job:repo'` on the `--no-inbox` command, which then only stops the job. Flags after `--project '<organisation>/<project>'` apply to that project only: `--role 'shape'` or `--role 'build'`, then for a Build project with the inbox on `--clone` or `--copy '<path>'` (with `--allow-unverified-folder` when chosen in 4.3), `--repo '<name>'` when it has several repos, and `--replace` only as step 4.1 says. A project whose folder is kept takes no folder flag. Every command names at least one `--project`: never run `setup --yes` without one, since it would then work on every project.
+Build the arguments from the answers, every one in single quotes. Every command starts `INBOX setup --yes --json --plugin-version '0.4.0'` and carries every `--retire '<id>'` and `--keep '<id>'` from step 3b (the same answers on each command: an item already retired by the first is nothing to do for the second). One exception, `job:repo` retired: pass `--retire 'job:repo'` only on the command that turns the inbox on (the second), and `--keep 'job:repo'` on the other; when no command turns the inbox on, pass `--retire 'job:repo'` on the `--no-inbox` command, which then only stops the job. Flags after `--project '<organisation>/<project>'` apply to that project only: `--role 'shape'` or `--role 'build'`, then for a Build project with the inbox on `--clone` or `--copy '<path>'` (with `--allow-unverified-folder` when chosen in 4.3), `--repo '<name>'` when it has several repos, and `--replace` only as step 4.1 says. A project whose folder is kept takes no folder flag. Every command names at least one `--project`: never run `setup --yes` without one, since it would then work on every project.
 
 - The projects that are Shape or have the inbox off: `INBOX setup --yes --no-inbox --json` with each of them and its `--role`. Skip this when there are none.
 - The projects with the inbox on: then `INBOX setup --yes --json` with each of them, its `--role` and its folder flags. Skip this when there are none (the answer was no, every project is Shape, or every Build project ended with the inbox off).
@@ -120,7 +120,7 @@ Say what was done, project by project, in a few lines from the `message`s. For s
 
 ## 7. Finish
 
-If any project has the inbox on, run `INBOX setup --plan --json --plugin-version '0.3.2'` once more, and for each project's `folder.path` check for a `CLAUDE.md` at its top (`test -f '<path>/CLAUDE.md'`, the path checked for a single quote first, as above). Name each folder with none: a run is given the folder's CLAUDE.md as background, so without one the agent knows less about where things are in that code.
+If any project has the inbox on, run `INBOX setup --plan --json --plugin-version '0.4.0'` once more, and for each project's `folder.path` check for a `CLAUDE.md` at its top (`test -f '<path>/CLAUDE.md'`, the path checked for a single quote first, as above). Name each folder with none: a run is given the folder's CLAUDE.md as background, so without one the agent knows less about where things are in that code.
 
 Then, when the inbox is on, say how to try it: in Product Map, open an entry in that project, mark it for agent input and write what you want. The answer comes within a minute or two while this Mac is awake. `INBOX status` shows the sign-in, the folders and the job.
 
