@@ -22,6 +22,17 @@ project. The claimed-unit hook (hooks/hooks.json) holds the first rule.
 - **Then remove the unit's worktree**, if you made one for it. If it is clean (`git status --porcelain` prints nothing) and its branch has no commits that are not on the remote, run `git worktree remove <path>` from the main checkout. If it has local changes or commits not pushed, say so and leave it in place.
 - **Stopping.** If the person stops the work, `release_unit` so someone else can pick it up.
 
+## Fit the checks to the change
+
+The repository's own rules win where they differ. Otherwise, do what the change needs and no more:
+
+- **What counts as small.** A change is small when it touches no data, permissions, migrations, server functions, dependencies or shared test setup, and is about 50 lines or fewer outside its tests. Anything else is not small.
+- **Let CI run the full check.** When the repository has CI, it is the one full run. Locally, run the typecheck and the tests for the files you touched. If you touched an area with its own check (the database, a package, a plugin), run that check too. Run the whole suite locally only when the change reaches shared test setup or dependencies, or the repository has no CI.
+- **Scale the review.** A small change gets one correctness review and one round, and no security review. Only a serious finding holds up the merge: one that breaks what was asked, loses data or fails CI. Anything else goes to a follow-up, not back to the builder.
+- **No repeat runs without asking.** Do not run tests over and over to chase a failure unless the person says to, and never while CI is running: CI may share the machine, and load can cause the failure you are chasing.
+- **Keep unrelated failures out.** A failure this unit did not cause gets its own entry or unit, and tell the person. It does not hold the unit up, and it does not widen the unit.
+- **Merge only on a result you read.** `gh pr merge` does not wait for checks unless the branch is protected. A script that waits for CI must read the check's conclusion and merge only on success. If CI fails or there is no result yet, do not merge.
+
 ## Fast track
 
 When the person's most recent message in this session asks for it in so many words, go from their request to a pull request without stopping at a release or approval link. Only an explicit "fast track this", or approving the plan in so many words ("approve it and build it"), counts. "Go ahead with that", "just do it" and the like are a yes to the next step, not fast track: leave releasing and approving to the person.
