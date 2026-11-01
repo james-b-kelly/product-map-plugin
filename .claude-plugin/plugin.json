@@ -1,6 +1,6 @@
 {
   "name": "product-map",
-  "version": "0.4.2",
+  "version": "0.6.0",
   "description": "Product Map in Claude Code: the connection to Product Map, the skills to capture, draft, plan and build its work, and the agent inbox that answers requests in the background.",
   "author": {
     "name": "James Kelly"

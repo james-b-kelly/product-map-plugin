@@ -17,7 +17,7 @@ export const BASE_TOOLS = [
     "take_agent_request", "finish_agent_request",
     "comment", "write_doc",
 ];
-// No approve_plan (PDM-55 WU-07): it approves on the person's word, which a run never has.
+// No approve_plan (PDM-55 WU-07) and no release_units (PDM-98 WU-01): they act on the person's word, which a run never has.
 // No edit_unit: it changes a released or started unit too (title, branch, PR, dependencies), and a run steered by an
 // entry's text could use it on any unit of the entry. A run adds units and writes their text; it never edits them.
 export const PLAN_TOOLS = ["create_plan", "create_unit", "request_confirmation"];

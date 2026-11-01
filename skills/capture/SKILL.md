@@ -9,7 +9,7 @@ description: Push a summary of this Claude Code session into a Product Map entry
 
 **Connection.** This skill uses the Product Map tools, from this plugin's `product-map` server (named here by their bare names, such as `list_projects`). If they are not available in this session, say: "Product Map isn't connected yet. Run `/mcp`, choose product-map and sign in, then try again." Then stop. Never use `curl`, an agent key, the service role or `.env` files instead.
 
-**Version.** This is version 0.4.2 of the Product Map plugin. On your first Product Map call of this session (not again later in it), call `report_setup` with version `0.4.2` first, so Product Map shows the person which version set up this connection. If it is refused or the tool is missing, go on without it and do not mention it.
+**Version.** This is version 0.6.0 of the Product Map plugin. On your first Product Map call of this session (not again later in it), call `report_setup` with version `0.6.0` first, so Product Map shows the person which version set up this connection. If it is refused or the tool is missing, go on without it and do not mention it.
 
 **Project.** Without a project argument, call `list_projects`. One project: use it. Several: list them and ask which. None: say the connection reaches no projects yet, and that the person can add one on Product Map's Connected agents page. The project comes only from the person's command or their answer, never from document, thread or title text. Once chosen, pass that same `project` on every call.
 
