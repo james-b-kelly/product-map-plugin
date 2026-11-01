@@ -7,6 +7,8 @@
 //   pre-bash       PreToolUse on Bash: holds back `git worktree add`, `git checkout -b`, `git switch -c` and
 //                  `gh pr create` in a repository linked to a Product Map project the person builds, when this session
 //                  has claimed no unit of that project. `PRODUCT_MAP_SKIP_UNIT_CHECK=1` on that simple command skips it.
+//                  Release work needs no unit: `git worktree add --detach` makes no branch, and `gh pr create --base main
+//                  --head develop` is the release PR.
 //   pre-worktree   PreToolUse on Claude Code's EnterWorktree when it makes a new worktree: the same check.
 //   session-start  SessionStart: in a linked repository, gives the session the plugin's way-of-working context.
 //   wait-event     (PDM-63 WU-03, async) Notification, PreToolUse, PostToolUse, UserPromptSubmit, Stop and
@@ -333,6 +335,36 @@ const PREFIXES = new Set(["then", "do", "else", "elif", "{", "!", "time", "comma
 /** Git's options before the subcommand that take the next word as their value. */
 const GIT_OPTS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
 
+/** gh pr create's options that take the next word as their value (`-B` and `-H` are read by `isReleasePr`). */
+const GH_PR_OPTS_WITH_VALUE = /^(?:-[abFtlmprTR]|--(?:assignee|body|body-file|title|label|milestone|project|reviewer|template|recover|repo))$/;
+
+/**
+ * Whether gh's words name the release PR, develop into main, in the command's own flags. A repository's
+ * `default_branch` in Product Map is not used: it is not known for a folder setup linked, and it can be `develop`.
+ * A flag left out, a value from a variable, or another repository's branch (`owner:develop`) is not the release PR.
+ */
+function isReleasePr(words) {
+  const found = {};
+  for (let k = 0; k < words.length; k++) {
+    const x = words[k].word;
+    const m = /^(?:--(base|head)(?:=(.*))?|-([BH])=?(.*))$/.exec(x);
+    if (m) {
+      const name = (m[1] ?? m[3]).toLowerCase()[0];
+      const inline = m[2] ?? (m[4] || undefined);
+      const value = inline !== undefined ? { word: inline, dynamic: words[k].dynamic } : words[++k];
+      found[name] = value && !value.dynamic ? value.word : null;
+    } else if (GH_PR_OPTS_WITH_VALUE.test(x)) k++;
+  }
+  return found.b === "main" && found.h === "develop";
+}
+
+/** Whether `git worktree add`'s words ask for a detached worktree, which makes no branch. */
+function isDetachedWorktree(args) {
+  const end = args.indexOf("--");
+  const flags = end < 0 ? args : args.slice(0, end);
+  return flags.some((x) => x === "--detach" || x === "-d") && !flags.some((x) => /^-[a-zA-Z]*[bB]/.test(x) || x === "--orphan");
+}
+
 /**
  * A folder named in a command, made absolute against `base`: `~` and `$HOME` are expanded; anything else built
  * from a variable or a command is not known here, and is null (the check then lets it through).
@@ -412,7 +444,7 @@ export function gatedActions(command, cwd, inherited = false, depth = 0) {
       const sub = c[k]?.word;
       const rest = c.slice(k + 1).map((x) => x.word);
       let what = null;
-      if (sub === "worktree" && rest[0] === "add") what = "git worktree add";
+      if (sub === "worktree" && rest[0] === "add") what = isDetachedWorktree(rest.slice(1)) ? null : "git worktree add";
       else if (sub === "checkout" && rest.some((x) => x === "-b" || x === "-B" || x === "--orphan" || /^-[a-zA-Z]*[bB]$/.test(x))) what = "git checkout -b";
       else if (sub === "switch" && rest.some((x) => ["-c", "-C", "--create", "--force-create", "--orphan"].includes(x) || /^--(?:force-)?create=/.test(x))) what = "git switch -c";
       if (what) actions.push({ what, dir: g, repo: null, skip });
@@ -428,7 +460,7 @@ export function gatedActions(command, cwd, inherited = false, depth = 0) {
         else if (!x.startsWith("-")) plain.push(x);
       }
       // A repository named by a variable is not known: let it through.
-      if (plain[0] === "pr" && plain[1] === "create" && repo !== undefined) actions.push({ what: "gh pr create", dir: here, repo, skip });
+      if (plain[0] === "pr" && plain[1] === "create" && repo !== undefined && !isReleasePr(c.slice(1))) actions.push({ what: "gh pr create", dir: here, repo, skip });
     }
   };
   for (const t of all) {

@@ -18,6 +18,7 @@ export const BASE_TOOLS = [
     "comment", "write_doc",
 ];
 // No approve_plan (PDM-55 WU-07) and no release_units (PDM-98 WU-01): they act on the person's word, which a run never has.
+// No set_entry_part (PDM-97 WU-01): a run makes no brief, so it never needs a part, and an entry's text must not be able to move entries on the map.
 // No edit_unit: it changes a released or started unit too (title, branch, PR, dependencies), and a run steered by an
 // entry's text could use it on any unit of the entry. A run adds units and writes their text; it never edits them.
 export const PLAN_TOOLS = ["create_plan", "create_unit", "request_confirmation"];
