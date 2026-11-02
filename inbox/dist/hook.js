@@ -21,6 +21,9 @@ export const BASE_TOOLS = [
 // No set_entry_part (PDM-97 WU-01): a run makes no brief, so it never needs a part, and an entry's text must not be able to move entries on the map.
 // No edit_unit: it changes a released or started unit too (title, branch, PR, dependencies), and a run steered by an
 // entry's text could use it on any unit of the entry. A run adds units and writes their text; it never edits them.
+// No set_brief_dependencies (Dependencies WU-04): it makes a whole brief wait, which is the person's to decide; a run
+// says so in its comment. create_unit's depends_on is not looked into: it may name units in other plans and briefs of
+// the project, and it can only make the run's own new unit wait, never start or change the units it names.
 export const PLAN_TOOLS = ["create_plan", "create_unit", "request_confirmation"];
 export const RUN_TOOLS = [...BASE_TOOLS, ...PLAN_TOOLS];
 /** ASCII lower case only: no Unicode case folding, so no other character can stand in for one of the id's. */
