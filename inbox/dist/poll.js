@@ -118,7 +118,12 @@ export async function poll(paths, deps) {
         }
         const auth = await freshAuth(paths, { fetch: deps.fetch, now, marginMs: TOKEN_MARGIN_MS });
         const client = new McpClient(paths, auth, { fetch: deps.fetch, now });
-        const requests = (await listAgentRequests(client)).sort((a, b) => a.asked_at.localeCompare(b.asked_at));
+        const seen = { unnamed: 0 };
+        const requests = (await listAgentRequests(client, seen)).sort((a, b) => a.asked_at.localeCompare(b.asked_at));
+        // PDM-99 WU-05 review: rows this package cannot name mean Product Map and the package are out of step. One line a
+        // tick, the count only; the rows are not run.
+        if (seen.unnamed > 0)
+            log("requests", { outcome: "unnamed", count: seen.unnamed });
         const noteFolders = (what) => log("folders", { outcome: what === "folders_unreadable" ? "reset" : "dropped", reason: what });
         let folders = loadFolders(paths, noteFolders);
         // Copies the inbox keeps: made, followed or replaced before anything is held or run. A project whose copy is
@@ -252,7 +257,7 @@ export async function poll(paths, deps) {
         // Counted before the run, so a tick that dies part way still counts it.
         let attempt = state.attempts.find((a) => a.id === next.request);
         if (!attempt) {
-            attempt = { id: next.request, project: next.project, entry: next.entry, count: 0, last_at: t, prompt_hash: next.prompt_hash, gave_up: false };
+            attempt = { id: next.request, project: next.project, entry: next.item.name, count: 0, last_at: t, prompt_hash: next.prompt_hash, gave_up: false };
             state.attempts.push(attempt);
         }
         attempt.count++;
@@ -310,7 +315,7 @@ export async function poll(paths, deps) {
         // The client may have refreshed on a 401 (and a fetch can take a minute); read the sign-in again so the run's
         // token outlives the run.
         const runAuth = await freshAuth(paths, { fetch: deps.fetch, now, marginMs: TOKEN_MARGIN_MS });
-        const req = { project: next.project, request: next.request, entry: next.entry, preset: next.preset };
+        const req = { project: next.project, request: next.request, item: next.item, thread: next.thread, published: next.published, preset: next.preset };
         const web = loadSettings(paths).web;
         const cmd = buildCommand({ claude: claude.real, req, folder, files, web });
         tick.outcome = "ran";

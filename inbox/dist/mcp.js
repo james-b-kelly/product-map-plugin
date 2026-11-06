@@ -2,6 +2,7 @@
 // answers. A 401 refreshes the sign-in once and tries again.
 import { createHash } from "node:crypto";
 import { FETCH_OPTIONS, fetchSignal, freshAuth, ServerUnavailable, SignInNeeded, unreachable } from "./auth.js";
+import { parseItem, UUID } from "./hook.js";
 export const PROTOCOL_VERSION = "2025-06-18";
 /** Product Map answered a call with a JSON-RPC error (`code`): -32602 is a tool the server does not have. */
 export class RpcError extends ServerUnavailable {
@@ -133,17 +134,23 @@ export function toolJson(text) {
     }
 }
 export const contributionOf = (v) => (v === "shape" || v === "build" ? v : null);
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export { UUID };
 export const PROJECT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
-export const ENTRY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,19}-[0-9]{1,9}$/;
-export async function listAgentRequests(client) {
+/**
+ * The requests the job may run. `seen.unnamed` counts the rows dropped because their item could not be named (no
+ * `item`, or one parseItem refuses): a server older or newer than this package, which the tick logs as a count only
+ * (review round 1: a version skew must not be silent).
+ */
+export async function listAgentRequests(client, seen) {
     const a = await client.callTool("list_agent_requests", {});
     if (a.isError)
         throw new ServerUnavailable("Product Map refused to list the requests.");
     const data = toolJson(a.text);
     const rows = Array.isArray(data.requests) ? data.requests : [];
     // Only the fields the job needs are kept, and only in their expected shape (they reach a command line, a hook's
-    // arguments and the log): the prompt and the entry's title never leave this function.
+    // arguments and the log): the prompt and the item's title never leave this function. A request whose item cannot be
+    // named (parseItem), or whose thread is not a uuid, is dropped: it is not run. An older server's row (an entry's
+    // request with no `item`) is dropped too: a job this new needs a server that names the item.
     return rows.flatMap((r) => {
         if (typeof r !== "object" || r === null)
             return [];
@@ -152,11 +159,20 @@ export async function listAgentRequests(client) {
             return [];
         if (typeof o.project !== "string" || !PROJECT_PATTERN.test(o.project))
             return [];
-        if (typeof o.entry !== "string" || !ENTRY_PATTERN.test(o.entry))
+        const it = typeof o.item === "object" && o.item !== null ? o.item : {};
+        const item = parseItem(it.kind, it.name);
+        if (item === null) {
+            if (seen)
+                seen.unnamed++;
+            return [];
+        }
+        if (!(o.thread === null || o.thread === undefined || (typeof o.thread === "string" && UUID.test(o.thread))))
             return [];
         const preset = o.preset === 1 || o.preset === 2 || o.preset === 3 || o.preset === 4 ? o.preset : null;
         return [{
-                request: o.request.toLowerCase(), project: o.project, entry: o.entry,
+                request: o.request.toLowerCase(), project: o.project, item: { kind: item.kind, name: item.name },
+                thread: typeof o.thread === "string" ? o.thread.toLowerCase() : null,
+                published: item.kind === "brief" && o.published === true,
                 asked_at: typeof o.asked_at === "string" ? o.asked_at : "",
                 preset,
                 prompt_hash: createHash("sha256").update(typeof o.prompt === "string" ? o.prompt : "").digest("hex"),

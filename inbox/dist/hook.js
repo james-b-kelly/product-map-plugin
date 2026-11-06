@@ -1,15 +1,64 @@
 // The run's PreToolUse hook (passed with `--settings`): a run may touch only its own request, and read only the
-// linked folder's code. Arguments: the request's project, entry id, request id, preset ("-" for none) and folder. Claude Code sends the tool call as JSON on
-// stdin; the hook answers with a deny decision, or nothing (the call then goes on to the run's allow list).
+// linked folder's code. Arguments: the request's project, its item's kind and name (PDM-99 WU-05: an entry, a brief, a
+// plan or a unit), the request id, preset ("-" for none), the thread of a request from @agent ("-" for none), whether
+// a brief is published ("published" or "-"), the folder, and "web" when web access is on. Claude Code sends the tool
+// call as JSON on stdin; the hook answers with a deny decision, or nothing (the call then goes on to the run's allow list).
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+// A copy of parseItem in supabase/functions/mcp/itemNames.ts (the server names a request's item the same way):
+// src/data/itemNamesCopy.test.ts holds them equal. Change both. An entry's prefix is upper case and a slug lower
+// case, so a name is read one way only; anything else is not run.
+const ENTRY = "[A-Z][A-Z0-9]{1,4}-[1-9][0-9]{0,8}";
+const SLUG = "[a-z0-9]+(?:-[a-z0-9]+)*";
+const PLAN = "[1-9][0-9]{0,8}";
+const WU = "WU-(0[1-9]|[1-9][0-9]{1,8})";
+const ENTRY_NAME = new RegExp(`^${ENTRY}$`);
+const BRIEF_NAME = new RegExp(`^${SLUG}$`);
+const ENTRY_PLAN = new RegExp(`^(${ENTRY}) P(${PLAN})$`);
+const BRIEF_PLAN = new RegExp(`^(${SLUG}) plan$`);
+const ENTRY_UNIT = new RegExp(`^(${ENTRY})(?: P(${PLAN}))? ${WU}$`);
+const BRIEF_UNIT = new RegExp(`^(${SLUG}) ${WU}$`);
+const MAX_SLUG = 60;
+export function parseItem(kind, name) {
+    if (typeof name !== "string" || name.length > 100)
+        return null;
+    let m;
+    switch (kind) {
+        case "entry":
+            return ENTRY_NAME.test(name) ? { kind, name, slug: name } : null;
+        case "brief":
+            return BRIEF_NAME.test(name) && name.length <= MAX_SLUG ? { kind, name, slug: name } : null;
+        case "plan":
+            if ((m = ENTRY_PLAN.exec(name)))
+                return { kind, name, slug: m[1], of: "entry", plan: Number(m[2]) };
+            if ((m = BRIEF_PLAN.exec(name)) && m[1].length <= MAX_SLUG)
+                return { kind, name, slug: m[1] };
+            return null;
+        case "unit":
+            if ((m = ENTRY_UNIT.exec(name)))
+                return { kind, name, slug: m[1], of: "entry", plan: m[2] ? Number(m[2]) : 0, unit: Number(m[3]) };
+            if ((m = BRIEF_UNIT.exec(name)) && m[1].length <= MAX_SLUG)
+                return { kind, name, slug: m[1], unit: Number(m[2]) };
+            return null;
+        default:
+            return null;
+    }
+}
+/** How a run's words name its item: "the entry PDB-7", "the brief some-brief", "the plan of the brief some-brief", "the work unit PDB-7 P2 WU-03". */
+export function itemWords(item) {
+    if (item.kind === "plan" && item.of === undefined)
+        return `the plan of the brief ${item.slug}`;
+    return `the ${item.kind === "unit" ? "work unit" : item.kind} ${item.name}`;
+}
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The web tools a run has only when the person turned web access on (`web on`). */
 export const WEB_TOOLS = ["WebFetch", "WebSearch"];
 const PREFIX = "mcp__product-map__";
 /**
  * The tools every run may call. The plan tools are for any request, not only preset 4: the prompt is free text, and
- * they reach only this entry's plan and units, which the person still approves or releases. No list_agent_requests
+ * they reach only the request's entry's plans and units, or its published brief's plan and units (PDM-99 WU-05; never
+ * on a plan's or a unit's request), which the person still approves or releases. No list_agent_requests
  * or list_projects: they answer about every project, and a run needs only its own request.
  */
 export const BASE_TOOLS = [
@@ -21,6 +70,8 @@ export const BASE_TOOLS = [
 // No set_entry_part (PDM-97 WU-01): a run makes no brief, so it never needs a part, and an entry's text must not be able to move entries on the map.
 // No edit_unit: it changes a released or started unit too (title, branch, PR, dependencies), and a run steered by an
 // entry's text could use it on any unit of the entry. A run adds units and writes their text; it never edits them.
+// PDM-99 WU-05: not even on a unit's own request (@agent in a unit's thread): a request to change a unit is answered
+// with a reply saying exactly what to change, for a person to make.
 // No set_brief_dependencies (Dependencies WU-04): it makes a whole brief wait, which is the person's to decide; a run
 // says so in its comment. create_unit's depends_on is not looked into: it may name units in other plans and briefs of
 // the project, and it can only make the run's own new unit wait, never start or change the units it names.
@@ -36,6 +87,47 @@ function entryDoc(input, entry) {
 }
 /** The entry's own plan or units, for the plan tools (which take no kind). */
 const entryPlan = (input, entry) => !("kind" in input) && input.of === "entry" && sameEntry(input.slug, entry);
+/** A brief's own plan or units, for the plan tools: its slug, exactly, with no kind and no `of`. */
+const briefPlan = (input, slug) => !("kind" in input) && !("of" in input) && input.slug === slug;
+/**
+ * `plan` as the tools take it, a number or "P2" / "2", equal to this plan's number. Left out never matches. It reads
+ * a value exactly as the server's `planArg` (supabase/functions/mcp/tools.ts) does, or not at all (no trimming), so a
+ * value it lets through names the plan the server will use: src/data/itemNamesCopy.test.ts holds the two together.
+ */
+export function samePlan(v, n) {
+    if (n === undefined)
+        return false;
+    if (typeof v === "number")
+        return Number.isInteger(v) && v >= 0 && v <= 1_000_000 && v === n;
+    const m = typeof v === "string" ? /^[Pp]?([0-9]{1,6})$/.exec(v) : null;
+    return m !== null && Number(m[1]) === n;
+}
+const ofKind = (input, ...kinds) => kinds.includes(input.kind);
+/**
+ * The documents a run may comment on and append to, by its item (PDM-99 WU-05). An entry: the entry and its own plans
+ * and units, as before. A brief: the brief, and its plan and units only when it is published. A plan: the plan and its
+ * units. A unit: that unit only. A plan or unit under an entry is named with `of: entry` and its own `plan`, which must
+ * be given: left out, the server picks a plan the hook cannot see.
+ */
+function covers(input, s) {
+    const it = s.item;
+    const underEntry = input.of === "entry" && sameEntry(input.slug, it.slug);
+    const underBrief = !("of" in input) && input.slug === it.slug;
+    switch (it.kind) {
+        case "entry":
+            return entryDoc(input, it.slug);
+        case "brief":
+            return underBrief && (ofKind(input, "brief") || (s.published === true && ofKind(input, "plan", "unit")));
+        case "plan":
+            return ofKind(input, "plan", "unit") && (it.of === "entry" ? underEntry && samePlan(input.plan, it.plan) : underBrief);
+        case "unit":
+            return ofKind(input, "unit") && input.unit === it.unit && (it.of === "entry" ? underEntry && samePlan(input.plan, it.plan) : underBrief);
+        default:
+            return false;
+    }
+}
+/** Where a run may draft a plan or work units: on an entry, and on a brief that is published. */
+const draftsPlans = (s) => s.item.kind === "entry" || (s.item.kind === "brief" && s.published === true);
 /** The built-in tools a run has: reading the linked folder's code, never changing it or running anything. */
 export const CODE_TOOLS = ["Read", "Grep", "Glob"];
 /**
@@ -183,7 +275,8 @@ export function decide(call, scope) {
     if (!RUN_TOOLS.includes(tool))
         return `This run may not use ${tool}.`;
     const input = (typeof call.tool_input === "object" && call.tool_input !== null && !Array.isArray(call.tool_input) ? call.tool_input : {});
-    const onlyEntry = `This run may write only to the entry ${scope.entry}.`;
+    const what = itemWords(scope.item);
+    const onlyItem = `This run may write only to ${what}.`;
     if (tool === "take_agent_request" || tool === "finish_agent_request") {
         return input.request === scope.request ? null : "This run works only on its own request.";
     }
@@ -197,33 +290,61 @@ export function decide(call, scope) {
             // Reads of other documents in the same project are allowed: they are background.
             return null;
         case "comment":
-            return entryDoc(input, scope.entry) ? null : onlyEntry;
+            if (!covers(input, scope))
+                return onlyItem;
+            // PDM-99 WU-05: a request from @agent is answered in the thread that asked, never in a new thread or another one.
+            if (scope.thread !== undefined && (typeof input.thread !== "string" || input.thread.toLowerCase() !== scope.thread.toLowerCase())) {
+                return `This run answers in the thread that asked: reply with thread ${scope.thread}.`;
+            }
+            return null;
         case "write_doc":
             if (input.mode !== "append")
                 return "This run may only append (mode append).";
-            return entryDoc(input, scope.entry) ? null : onlyEntry;
+            return covers(input, scope) ? null : onlyItem;
         case "create_plan":
         case "create_unit":
             // PDM-55 WU-07: a run prepares work and never builds it, so it never fast-tracks: what it adds stays a draft
             // for the person to release, and a plan waits for their approval. The server refuses the inbox's connection too.
             if ("fast_track" in input)
                 return "This run may not use fast_track: the person releases and approves what it prepares.";
-            return entryPlan(input, scope.entry) ? null : onlyEntry;
+            if (!draftsPlans(scope))
+                return `This run may not draft a plan or work units on ${what}.`;
+            return (scope.item.kind === "entry" ? entryPlan(input, scope.item.slug) : briefPlan(input, scope.item.slug)) ? null : onlyItem;
         case "request_confirmation": {
+            if (scope.item.kind === "brief" && scope.published === true) {
+                // A published brief's plan: only its approval, which the person confirms.
+                const approve = input.action === "approve" && input.kind === "plan" && !("of" in input) && input.slug === scope.item.slug;
+                return approve ? null : `This run may only ask the person to approve the plan of ${what}.`;
+            }
+            if (scope.item.kind !== "entry")
+                return `This run may not ask for a confirmation on ${what}.`;
             // Approving the entry's plan, or releasing its draft units (units with no plan): both the person confirms.
             const approve = input.action === "approve" && input.kind === "plan" && input.of === "entry";
             const release = input.action === "release" && input.kind === "entry" && !("of" in input);
-            return (approve || release) && sameEntry(input.slug, scope.entry)
-                ? null : `This run may only ask the person to approve the plan of ${scope.entry} or release its draft units.`;
+            return (approve || release) && sameEntry(input.slug, scope.item.slug)
+                ? null : `This run may only ask the person to approve the plan of ${scope.item.slug} or release its draft units.`;
         }
         default:
             return `This run may not use ${tool}.`;
     }
 }
+/**
+ * The hook's arguments, in run.ts's order (hookSettings): project, kind, name, request, preset, thread, published,
+ * folder, web. An item that cannot be named, or a thread that is not a uuid, throws: the call is then refused.
+ */
 export function parseScope(argv) {
-    const [project = "", entry = "", request = "", preset = "-", folder = "", web = ""] = argv;
+    const [project = "", kind = "", name = "", request = "", preset = "-", thread = "-", published = "-", folder = "", web = ""] = argv;
+    const item = parseItem(kind, name);
+    if (item === null)
+        throw new Error("The run's item is malformed.");
+    if (thread !== "-" && !UUID.test(thread))
+        throw new Error("The run's thread is malformed.");
     const n = Number(preset);
-    return { project, entry, request, preset: Number.isInteger(n) && n >= 1 && n <= 4 ? n : null, ...(folder ? { folder } : {}), ...(web === "web" ? { web: true } : {}) };
+    return {
+        project, item, request, preset: Number.isInteger(n) && n >= 1 && n <= 4 ? n : null,
+        ...(thread !== "-" ? { thread } : {}), ...(published === "published" ? { published: true } : {}),
+        ...(folder ? { folder } : {}), ...(web === "web" ? { web: true } : {}),
+    };
 }
 export function answer(reason) {
     if (reason === null)

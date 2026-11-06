@@ -1,7 +1,8 @@
 // One Claude Code run for one request, in the project's folder. Always an argument array, never a shell.
 //
 // What the run is given (each flag checked against `claude --help`, Claude Code 2.1.300):
-// - `-p <prompt>`: the request, by project, entry and request id. Not a slash command: with no setting sources the
+// - `-p <prompt>`: the request, by project, item (PDM-99 WU-05: an entry, a brief, a plan or a unit), the thread of a
+//   request from @agent, and request id. Not a slash command: with no setting sources the
 //   user's skills do not load, so the skill's text is given as the system prompt instead (below).
 // - `--setting-sources ""`: no user, project or local settings. No hooks or allow rules from the person's settings
 //   or the folder's `.claude/`, no skill or command from the folder that could shadow ours. (It also stops Claude
@@ -12,8 +13,8 @@
 //   no web unless the person turned it on for this Mac (`web on`, which adds WebFetch and WebSearch). The hook keeps reads inside the folder and away from secret files, and the deny rules cover the same files.
 // - `--allowedTools`: only the Product Map tools a run needs (the plan tools included), and
 //   `--permission-mode dontAsk`, so anything else is refused, never asked about.
-// - `--settings <file>`: a PreToolUse hook (`hook.js`) that refuses any call outside the request's project and entry,
-//   and any `write_doc` that is not an append. Flag settings apply even with no setting sources.
+// - `--settings <file>`: a PreToolUse hook (`hook.js`) that refuses any call outside the request's project and item,
+//   any comment outside a mention's own thread, and any `write_doc` that is not an append. Flag settings apply even with no setting sources.
 // - `--mcp-config <file> --strict-mcp-config`: only this package's server and access token.
 // - `--session-id <uuid>`: so the session id is known before the run starts.
 // Every file above is written 600 for the run and removed after it.
@@ -24,8 +25,8 @@ import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readF
 import { delimiter, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writePrivate, writePrivateJson } from "./files.js";
-import { CODE_TOOLS, isSecretPath, readDenyRules, RUN_TOOLS, WEB_TOOLS } from "./hook.js";
-import { ENTRY_PATTERN, PROJECT_PATTERN, UUID } from "./mcp.js";
+import { CODE_TOOLS, isSecretPath, itemWords, parseItem, readDenyRules, RUN_TOOLS, WEB_TOOLS } from "./hook.js";
+import { PROJECT_PATTERN, UUID } from "./mcp.js";
 import { SKILL_SOURCE } from "./skill.js";
 export const RUN_TIMEOUT_MS = 15 * 60_000;
 /** After SIGTERM, how long the run has to stop before SIGKILL. */
@@ -63,25 +64,32 @@ export function findClaude(pathEnv, home, trusted = trustedClaudeDirs(home)) {
 export const runFiles = (paths) => ({ mcpConfig: paths.runMcpConfig, settings: paths.runSettings, systemPrompt: paths.runPrompt });
 /** The request's ids, checked again here: they reach a command line, a hook's arguments and the system prompt. */
 export function checkRequest(req) {
-    if (!PROJECT_PATTERN.test(req.project) || !ENTRY_PATTERN.test(req.entry) || !UUID.test(req.request))
+    if (!PROJECT_PATTERN.test(req.project) || parseItem(req.item?.kind, req.item?.name) === null || !UUID.test(req.request)) {
         throw new Error("A request with malformed ids was not run.");
+    }
+    if (!(req.thread === null || (typeof req.thread === "string" && UUID.test(req.thread))))
+        throw new Error("A request with a malformed thread was not run.");
+    if (typeof req.published !== "boolean")
+        throw new Error("A request with a malformed item was not run.");
     if (req.preset !== null && ![1, 2, 3, 4].includes(req.preset))
         throw new Error("A request with a malformed preset was not run.");
     return req;
 }
+/** The item in the run's own words, after checkRequest: "the entry PDB-7", "the work unit some-brief WU-03". */
+const words = (req) => itemWords(parseItem(req.item.kind, req.item.name));
 const SESSION = /^[A-Za-z0-9._~-]{1,120}$/;
 export function buildCommand(opts) {
     checkRequest(opts.req);
     const sessionId = opts.sessionId ?? randomUUID();
     if (!SESSION.test(sessionId))
         throw new Error("A malformed session id.");
-    const { project, request, entry } = opts.req;
+    const { project, request, thread } = opts.req;
     return {
         file: opts.claude,
         cwd: opts.folder,
         sessionId,
         args: [
-            "-p", `Answer the Product Map request ${request} in ${project} (entry ${entry}), following the agent-inbox instructions in your system prompt.`,
+            "-p", `Answer the Product Map request ${request} in ${project} (on ${words(opts.req)}${thread ? `, asked in its thread ${thread}` : ""}), following the agent-inbox instructions in your system prompt.`,
             "--session-id", sessionId,
             "--setting-sources", "",
             "--append-system-prompt-file", opts.files.systemPrompt,
@@ -98,7 +106,11 @@ export function buildCommand(opts) {
 export const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 export function hookSettings(req, node, script = HOOK_SCRIPT, folder = "", web = false) {
     checkRequest(req);
-    const args = [node, script, req.project, req.entry, req.request, req.preset === null ? "-" : String(req.preset), folder, ...(web ? ["web"] : [])];
+    // In parseScope's order (hook.ts): change both together.
+    const args = [
+        node, script, req.project, req.item.kind, req.item.name, req.request, req.preset === null ? "-" : String(req.preset),
+        req.thread ?? "-", req.published ? "published" : "-", folder, ...(web ? ["web"] : []),
+    ];
     // `|| exit 2`: if the hook cannot run at all (node or the script gone, a crash), the call is blocked, not let
     // through. Exit 2 is Claude Code's blocking exit for a PreToolUse hook.
     return {
@@ -176,7 +188,11 @@ export function systemPrompt(req, sessionId, context, skillText = readFileSync(S
     const stale = staleTrack && /^[A-Za-z0-9._/-]{1,200}$/.test(staleTrack)
         ? ` The linked code could not be updated before this run; it may be behind ${staleTrack}.`
         : "";
-    return `${body}\n\nThis run's Claude Code session id is ${sessionId}. The request is ${req.request} in ${req.project}, on the entry ${req.entry}.${stale}${web ? WEB_LINE : ""}${background}\n`;
+    const thread = req.thread ? ` It came from @agent in the thread ${req.thread}: answer by replying in that thread.` : "";
+    const brief = req.item.kind === "brief"
+        ? (req.published ? " The brief is published, so its plan may be drafted." : " The brief is not published, so no plan is drafted for it.")
+        : "";
+    return `${body}\n\nThis run's Claude Code session id is ${sessionId}. The request is ${req.request} in ${req.project}, on ${words(req)}.${thread}${brief}${stale}${web ? WEB_LINE : ""}${background}\n`;
 }
 export function writeRunFiles(files, o) {
     writePrivateJson(files.mcpConfig, {
