@@ -35,6 +35,11 @@ export const KILL_GRACE_MS = 10_000;
 export const MCP_SERVER_NAME = "product-map";
 export { BASE_TOOLS, PLAN_TOOLS, RUN_TOOLS } from "./hook.js";
 /** Every run is allowed the same tools, whatever its preset. */
+/**
+ * Whether a run gets the web tools: only when the person turned web access on for this Mac and the request is their
+ * own (from the form, no thread). A request from an @agent message never does (PDM-109).
+ */
+export const runHasWeb = (webOn, req) => webOn === true && !req.thread;
 export const allowedTools = (web = false) => [...CODE_TOOLS, ...(web ? WEB_TOOLS : []), ...RUN_TOOLS.map((t) => `mcp__${MCP_SERVER_NAME}__${t}`)];
 const builtIn = (web = false) => [...CODE_TOOLS, ...(web ? WEB_TOOLS : [])];
 /** The hook script beside this file (hook.js when built, hook.ts under the tests). */

@@ -264,6 +264,11 @@ export function decide(call, scope) {
     if (CODE_TOOLS.includes(name))
         return decideRead(name, call.tool_input, scope.folder);
     if (WEB_TOOLS.includes(name)) {
+        // A run an @agent message started answers text anyone in the project could write, so it never has the web, even
+        // when the Mac has it on (PDM-109): that text could have it put project content in a URL. run.ts leaves the web
+        // tools out of such a run too; this is the second guard.
+        if (scope.thread)
+            return "This run was started by an @agent message, so it may not use the web.";
         if (!scope.web)
             return "Web access is off on this Mac (npx product-map-inbox web on).";
         const url = call.tool_input?.url;

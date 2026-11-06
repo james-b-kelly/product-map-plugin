@@ -21,7 +21,7 @@ import { killLiveGit, mayRun, parseTrack, realGit, updateTracked } from "./git.j
 import { takeLock } from "./lock.js";
 import { errName, logLine } from "./log.js";
 import { GAVE_UP_NOTE, holdAgentRequest, listAgentRequests, listRepos, McpClient, NO_FOLDER_NOTE, ReposRefused } from "./mcp.js";
-import { buildCommand, findClaude, HOOK_SCRIPT, killGroup, removeRunFiles, RUN_TIMEOUT_MS, runCommand, runEnv, runFiles, writeRunFiles, } from "./run.js";
+import { buildCommand, findClaude, HOOK_SCRIPT, killGroup, removeRunFiles, RUN_TIMEOUT_MS, runCommand, runEnv, runFiles, runHasWeb, writeRunFiles, } from "./run.js";
 import { loadSettings } from "./settings.js";
 import { loadState, noteTrack, saveState } from "./state.js";
 import { existsSync } from "node:fs";
@@ -316,7 +316,7 @@ export async function poll(paths, deps) {
         // token outlives the run.
         const runAuth = await freshAuth(paths, { fetch: deps.fetch, now, marginMs: TOKEN_MARGIN_MS });
         const req = { project: next.project, request: next.request, item: next.item, thread: next.thread, published: next.published, preset: next.preset };
-        const web = loadSettings(paths).web;
+        const web = runHasWeb(loadSettings(paths).web, req);
         const cmd = buildCommand({ claude: claude.real, req, folder, files, web });
         tick.outcome = "ran";
         tick.ran = next.request;
