@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 export const SKIP_VAR = "PRODUCT_MAP_SKIP_UNIT_CHECK";
 const TOOL = /^mcp__(?:plugin_product-map_product-map|product-map)__([a-z_]+)$/;
-const ENDS_CLAIM = new Set(["done", "cancelled", "ready"]);
+const ENDS_CLAIM = new Set(["done", "released", "cancelled", "ready"]);
 const CLAIM_DAYS = 30;
 const GIT_TIMEOUT_MS = 2000;
 const PROJECT = /^[^/\s]+\/[^/\s]+$/;

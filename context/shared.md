@@ -44,8 +44,9 @@ The process is as heavy as the work needs, and no heavier. Choose the path for e
 When the person asks what needs work, or to "pick up anything that needs work", or runs `/product-map:work-on` with no id:
 
 1. `list_work`. Its `plans_to_draft` come first, outside priority order: plans someone started and left empty, which are a request to write them. Offer `/product-map:draft-plan entry <id> P<n>` for each.
-2. Then the ready units whose dependencies are done, in priority order: `list_work` lists Urgent first, then High, Medium, Low and those with no level. A unit shows its plan's level (`parent_shown_priority`), or its entry's when it has no plan. Under Build, offer to build one (`/product-map:work-unit`). Under Shape, list them for whoever builds.
-3. Then, if the person wants more, open entries with no work yet, highest `shown_priority` first: offer the path that fits each (above).
+2. Then the ready units whose dependencies are done (or released), in priority order: `list_work` lists Urgent first, then High, Medium, Low and those with no level. A unit shows its plan's level (`parent_shown_priority`), or its entry's when it has no plan. Under Build, offer to build one (`/product-map:work-unit`). Under Shape, list them for whoever builds.
+3. In a project that uses releases (`list_releases` gives `uses_releases: true`), Done work is merged but not live, and waits for a release. Say whether a release is open (not live yet), with its current step and what it waits on. Under Build, offer to carry it on, or to run the next release (`build.md`, "Running a release").
+4. Then, if the person wants more, open entries with no work yet, highest `shown_priority` first: offer the path that fits each (above).
 
 **Priority** means: Urgent, drop other work; High, next up; Medium, planned; Low, when there is room; none, nobody has judged it. `set_priority` sets it on an entry, a brief or a plan. A work unit has none of its own. `draft_units` stay outside priority order too. If `list_work` says `priorities_unread`, the levels could not be read, which does not mean none are set: say so. `priority_unread: true` from `read_doc` or `set_priority` means the same for one item: its level could not be read, not that it is unset.
 
